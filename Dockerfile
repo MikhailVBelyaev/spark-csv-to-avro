@@ -10,7 +10,8 @@ RUN sbt clean compile assembly
 # ========================
 # Stage 2: Runtime
 # ========================
-FROM openjdk:11-jdk
+FROM apache/spark:3.5.0-scala2.12-java11-python3-ubuntu
+# FROM openjdk:11-jdk
 
 WORKDIR /app
 COPY --from=builder /app/target/scala-2.12/*.jar /app/app.jar
@@ -18,4 +19,5 @@ COPY src/main/resources/application.conf /app/application.conf
 COPY src/main/resources/log4j2.properties /app/log4j2.properties
 COPY data /app/data
 
-CMD ["java", "-jar", "/app/app.jar"]
+CMD ["spark-submit", "--class", "com.example.CsvToAvroApp", "/app/app.jar"]
+# CMD ["java", "-jar", "/app/app.jar"]

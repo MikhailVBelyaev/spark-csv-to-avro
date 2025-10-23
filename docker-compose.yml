@@ -7,7 +7,7 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
-    command: ["java", "--add-opens=java.base/jdk.internal.platform=ALL-UNNAMED", "-XX:-UseContainerSupport", "-Dspark.executor.processTreeMetrics.enabled=false", "-Dspark.metrics.conf.*.sink.jmx.class=org.apache.spark.metrics.sink.NullSink", "-jar", "/app/app.jar"]
+    command: ["java", "--add-opens=java.base/jdk.internal.platform=ALL-UNNAMED", "-XX:-UseContainerSupport", "-Dspark.executor.processTreeMetrics.enabled=false", "-jar", "/app/app.jar"]
 
   spark-test:
     build:

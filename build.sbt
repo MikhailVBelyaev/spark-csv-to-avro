@@ -4,7 +4,7 @@ scalaVersion := "2.12.18"
 
 libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % "3.5.0",
-  "org.apache.spark" %% "spark-sql" % "3.5.0",
+  "org.apache.spark" %% "spark-sql" % "3.5.0"  % "compile",
   "org.apache.spark" %% "spark-avro" % "3.5.0",
   "com.typesafe" % "config" % "1.4.2",
   "ch.qos.logback" % "logback-classic" % "1.4.14",

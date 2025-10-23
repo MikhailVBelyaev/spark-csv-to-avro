@@ -10,7 +10,15 @@ libraryDependencies ++= Seq(
   "org.scalatest" %% "scalatest" % "3.2.18" % Test
 )
 
-assemblyMergeStrategy in assembly := {
+assembly / mainClass := Some("com.example.CsvToAvroApp")
+assembly / test := {}
+
+assembly / assemblyMergeStrategy := {
   case PathList("META-INF", xs @ _*) => MergeStrategy.discard
-  case _ => MergeStrategy.first
+  case x => MergeStrategy.first
 }
+
+assembly / assemblyOption := (assembly / assemblyOption).value.copy(
+  includeScala = true,
+  includeDependency = true
+)

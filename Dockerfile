@@ -1,0 +1,20 @@
+# ========================
+# Stage 1: Build the App
+# ========================
+FROM hseeberger/scala-sbt:11.0.16_1.9.7_2.12.18 AS builder
+
+WORKDIR /app
+COPY . .
+RUN sbt clean assembly
+
+# ========================
+# Stage 2: Runtime
+# ========================
+FROM openjdk:11-jre-slim
+
+WORKDIR /app
+COPY --from=builder /app/target/scala-2.12/*.jar /app/app.jar
+COPY src/main/resources/application.conf /app/application.conf
+COPY data /app/data
+
+CMD ["java", "-jar", "/app/app.jar"]

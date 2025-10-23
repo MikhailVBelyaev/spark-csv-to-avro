@@ -1,0 +1,15 @@
+version: "3.9"
+services:
+  spark-app:
+    build: .
+    container_name: spark_csv_to_avro
+    volumes:
+      - ./data:/app/data
+    environment:
+      - SPARK_LOCAL_IP=127.0.0.1
+    command: ["java", "-jar", "/app/app.jar"]
+
+  spark-test:
+    build: .
+    container_name: spark_csv_test
+    command: ["sbt", "test"]

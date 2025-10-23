@@ -13,10 +13,16 @@ RUN sbt clean compile assembly
 FROM apache/spark:3.5.0-scala2.12-java11-python3-ubuntu
 # FROM openjdk:11-jdk
 
+# ✅ Switch to root temporarily for package installation
+USER root
 RUN apt-get update && \
     apt-get install -y wget && \
     wget https://repo1.maven.org/maven2/org/apache/spark/spark-sql_2.12/3.5.0/spark-sql_2.12-3.5.0.jar -P /opt/spark/jars/ && \
-    wget https://repo1.maven.org/maven2/org/apache/spark/spark-core_2.12/3.5.0/spark-core_2.12-3.5.0.jar -P /opt/spark/jars/
+    wget https://repo1.maven.org/maven2/org/apache/spark/spark-core_2.12/3.5.0/spark-core_2.12-3.5.0.jar -P /opt/spark/jars/ && \
+    rm -rf /var/lib/apt/lists/*
+
+# ✅ Return to the spark user for runtime
+USER 185
 
 WORKDIR /app
 COPY --from=builder /app/target/scala-2.12/*.jar /app/app.jar

@@ -12,24 +12,25 @@ object CsvToAvroApp {
     val spark = SparkSession.builder()
       .appName("CsvToAvroApp")
       .master(sys.env.getOrElse("SPARK_MASTER_URL", "local[*]"))
+      .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true") // For partitionBy compatibility
       .getOrCreate()
 
     val conf = ConfigFactory.load().getConfig("app")
 
-    val inputDir = conf.getString("sourceDir")
-    val outputDir = conf.getString("destDir")
+    val inputDir = s"/app/${conf.getString("sourceDir")}"
+    val outputDir = s"/app/${conf.getString("destDir")}"
     val delimiter = Try(conf.getString("delimiter")).getOrElse(",")
     val dedupKey = conf.getString("dedupKey")
     val partitionCol = Try(conf.getString("partitionColumn")).getOrElse("processing_date")
-    val schemaMap = conf.getConfig("schemaMapping")
 
     val df = spark.read
+      .format("csv") // Explicitly specify CSV format
       .option("header", "true")
       .option("delimiter", delimiter)
       .option("inferSchema", "true")
-      .csv(inputDir)
+      .load(inputDir)
 
-    val cleaned = process(df, schemaMap, dedupKey, partitionCol)
+    val cleaned = process(df, conf.getConfig("schemaMapping"), dedupKey, partitionCol)
     cleaned.write
       .format("avro")
       .mode("overwrite")
@@ -52,20 +53,20 @@ object CsvToAvroApp {
     var result = df
     import df.sparkSession.implicits._
 
-    config.entrySet().forEach(entry => {
+    config.entrySet().forEach { entry =>
       val colName = entry.getKey
       val targetType = config.getString(colName)
       val castExpr = targetType.split(":")(0)
       val fmt = if (targetType.contains(":")) targetType.split(":")(1) else ""
 
       result = castExpr match {
-        case "IntegerType"  => result.withColumn(colName, $"$colName".cast(IntegerType))
-        case "DoubleType"   => result.withColumn(colName, $"$colName".cast(DoubleType))
-        case "StringType"   => result.withColumn(colName, $"$colName".cast(StringType))
-        case "DateType"     => result.withColumn(colName, to_date($"$colName", fmt))
-        case _              => result
+        case "IntegerType" => result.withColumn(colName, $"${colName}".cast(IntegerType))
+        case "DoubleType" => result.withColumn(colName, $"${colName}".cast(DoubleType))
+        case "StringType" => result.withColumn(colName, $"${colName}".cast(StringType))
+        case "DateType" => result.withColumn(colName, to_date($"${colName}", fmt))
+        case _ => result
       }
-    })
+    }
     (result, errorCount)
   }
 }

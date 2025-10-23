@@ -15,6 +15,7 @@ FROM openjdk:11-jre-slim
 WORKDIR /app
 COPY --from=builder /app/target/scala-2.12/*.jar /app/app.jar
 COPY src/main/resources/application.conf /app/application.conf
+COPY src/main/resources/log4j2.properties /app/log4j2.properties
 COPY data /app/data
 
 CMD ["java", "-jar", "/app/app.jar"]

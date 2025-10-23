@@ -7,8 +7,8 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
-    command: ["java", "--add-opens=java.base/jdk.internal.platform=ALL-UNNAMED", "-XX:-UseContainerSupport", "-Dspark.executor.processTreeMetrics.enabled=false", "-jar", "/app/app.jar"]
-
+      - JAVA_OPTS=-Dlog4j.configurationFile=/app/log4j2.properties --add-opens=java.base/jdk.internal.platform=ALL-UNNAMED -XX:-UseContainerSupport -Dspark.executor.processTreeMetrics.enabled=false
+    command: ["java", "-jar", "/app/app.jar"]
   spark-test:
     build:
       context: .

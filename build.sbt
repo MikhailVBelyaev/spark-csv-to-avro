@@ -3,11 +3,11 @@ version := "0.1"
 scalaVersion := "2.12.18"
 
 libraryDependencies ++= Seq(
-  "org.apache.spark" %% "spark-core" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-sql" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-avro" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-hive" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-catalyst" % "3.5.0" % "provided",
+  "org.apache.spark" %% "spark-core" % "3.5.0",
+  "org.apache.spark" %% "spark-sql" % "3.5.0",
+  "org.apache.spark" %% "spark-avro" % "3.5.0",
+  "org.apache.spark" %% "spark-hive" % "3.5.0",
+  "org.apache.spark" %% "spark-catalyst" % "3.5.0",
   "com.typesafe" % "config" % "1.4.2",
   // Logging dependencies
   "org.apache.logging.log4j" % "log4j-slf4j2-impl" % "2.20.0",

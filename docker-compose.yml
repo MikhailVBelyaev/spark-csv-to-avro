@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   spark-app:
     build: .
@@ -7,8 +6,9 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
-      - JAVA_OPTS=-Dlog4j.configurationFile=/app/log4j2.properties --add-opens=java.base/jdk.internal.platform=ALL-UNNAMED -XX:-UseContainerSupport -Dspark.executor.processTreeMetrics.enabled=false
+      - JAVA_OPTS=-Dlog4j.configurationFile=/app/log4j2.properties --add-opens=java.base/jdk.internal.platform=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED -XX:-UseContainerSupport -Dspark.executor.processTreeMetrics.enabled=false
     command: ["java", "-jar", "/app/app.jar"]
+
   spark-test:
     build:
       context: .

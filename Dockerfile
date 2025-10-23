@@ -10,7 +10,7 @@ RUN sbt clean compile assembly
 # ========================
 # Stage 2: Runtime
 # ========================
-FROM openjdk:11-jre-slim
+FROM openjdk:11-jdk
 
 WORKDIR /app
 COPY --from=builder /app/target/scala-2.12/*.jar /app/app.jar

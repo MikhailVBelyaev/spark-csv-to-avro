@@ -10,6 +10,8 @@ services:
     command: ["java", "-jar", "/app/app.jar"]
 
   spark-test:
-    build: .
+    build:
+      context: .
+      target: builder
     container_name: spark_csv_test
     command: ["sbt", "test"]

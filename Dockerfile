@@ -1,7 +1,7 @@
 # ========================
 # Stage 1: Build the App
 # ========================
-FROM hseeberger/scala-sbt:11.0.16_1.9.7_2.12.18 AS builder
+FROM hseeberger/scala-sbt:11.0.20_1.10.0_2.12.19 AS builder
 
 WORKDIR /app
 COPY . .

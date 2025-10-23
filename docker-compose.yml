@@ -6,9 +6,15 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
-      - JAVA_OPTS=-Dlog4j.configurationFile=/app/log4j2.properties --add-opens=java.base/jdk.internal.platform=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED -XX:-UseContainerSupport -Dspark.executor.processTreeMetrics.enabled=false
-    command: ["java", "-jar", "/app/app.jar"]
-
+    command: [
+      "java",
+      "-XX:-UseContainerSupport",  # ⬅️ **Critical fix for the NullPointerException**
+      "--add-opens=java.base/jdk.internal.platform=ALL-UNNAMED", # ⬅️ For reflective access warnings
+      "--add-opens=java.base/java.nio=ALL-UNNAMED",             # ⬅️ For reflective access warnings
+      "-Dlog4j.configurationFile=/app/log4j2.properties",
+      "-jar",
+      "/app/app.jar"
+    ]
   spark-test:
     build:
       context: .

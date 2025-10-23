@@ -5,7 +5,7 @@ FROM hseeberger/scala-sbt:11.0.14.1_1.6.2_2.12.15 AS builder
 
 WORKDIR /app
 COPY . .
-RUN sbt clean assembly
+RUN sbt clean compile assembly
 
 # ========================
 # Stage 2: Runtime

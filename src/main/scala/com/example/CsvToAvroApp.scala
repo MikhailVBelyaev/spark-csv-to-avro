@@ -12,7 +12,10 @@ object CsvToAvroApp {
     val spark = SparkSession.builder()
       .appName("CsvToAvroApp")
       .master(sys.env.getOrElse("SPARK_MASTER_URL", "local[*]"))
-      .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true") // For partitionBy compatibility
+      .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
+      .config("spark.metrics.conf.*.sink.console.class", "org.apache.spark.metrics.sink.ConsoleSink")
+      .config("spark.metrics.conf.driver.sink.console.period", "0") // Disable metrics
+      .config("spark.metrics.conf.executor.sink.console.period", "0") // Disable metrics
       .getOrCreate()
 
     val conf = ConfigFactory.load().getConfig("app")

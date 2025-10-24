@@ -6,6 +6,7 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
+    command: ["sleep", "infinity"]
   spark-test:
     build:
       context: .

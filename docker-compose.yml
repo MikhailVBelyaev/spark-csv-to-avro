@@ -6,6 +6,12 @@ services:
       - ./data:/app/data
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
+    command: [
+      "spark-submit",
+      "--packages", "org.apache.spark:spark-sql_2.12:3.5.0",
+      "--class", "com.example.CsvToAvroApp",
+      "/app/app.jar"
+    ]
   spark-test:
     build:
       context: .

@@ -16,4 +16,4 @@ RUN mkdir -p /home/spark/.ivy2/cache && \
     chown spark:spark /home/spark/.ivy2/cache && \
     wget https://repo1.maven.org/maven2/org/apache/spark/spark-avro_2.12/3.5.0/spark-avro_2.12-3.5.0.jar -P /opt/spark/jars/
 USER spark
-CMD ["/opt/spark/bin/spark-submit", "--class", "com.example.CsvToAvroApp", "--driver-java-options", "-Dlog4j.configurationFile=/app/log4j2.properties -Dlog4j.debug=true", "/app/app.jar"]
+# CMD ["/opt/spark/bin/spark-submit", "--class", "com.example.CsvToAvroApp", "--driver-java-options", "-Dlog4j.configurationFile=/app/log4j2.properties -Dlog4j.debug=true", "/app/app.jar"]

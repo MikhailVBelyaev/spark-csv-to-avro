@@ -7,7 +7,7 @@ RUN sbt clean compile assembly
 # Stage 2: Runtime
 FROM apache/spark:3.5.0-scala2.12-java11-python3-ubuntu
 WORKDIR /app
-COPY jar_output/spark-csv-to-avro-assembly-0.1.jar /app/app.jar
+COPY --from=builder /app/target/scala-2.12/spark-csv-to-avro-assembly-0.1.jar /app/app.jar
 COPY src/main/resources/application.conf /app/application.conf
 COPY src/main/resources/log4j2.properties /app/log4j2.properties
 COPY data /app/data

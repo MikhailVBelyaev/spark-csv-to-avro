@@ -30,5 +30,6 @@ COPY src/main/resources/application.conf /app/application.conf
 COPY src/main/resources/log4j2.properties /app/log4j2.properties
 COPY data /app/data
 
-CMD ["spark-submit", "--class", "com.example.CsvToAvroApp", "/app/app.jar"]
+CMD ["spark-submit", "--packages", "org.apache.spark:spark-sql_2.12:3.5.0", "--class", "com.example.CsvToAvroApp", "/app/app.jar"]
+# CMD ["spark-submit", "--class", "com.example.CsvToAvroApp", "/app/app.jar"]
 # CMD ["java", "-jar", "/app/app.jar"]

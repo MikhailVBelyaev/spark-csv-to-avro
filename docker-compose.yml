@@ -7,9 +7,9 @@ services:
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
     command: [
-      "spark-submit",
-      "--packages", "org.apache.spark:spark-sql_2.12:3.5.0",
+      "/opt/spark/bin/spark-submit",
       "--class", "com.example.CsvToAvroApp",
+      # "--driver-java-options", "-Dlog4j.configurationFile=/app/log4j2.properties -Dlog4j.debug=true",
       "/app/app.jar"
     ]
   spark-test:

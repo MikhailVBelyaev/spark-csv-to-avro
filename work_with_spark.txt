@@ -1,0 +1,5 @@
+inside container: 
+scala shell:
+/opt/spark/bin/spark-shell --jars /opt/spark/jars/spark-avro_2.12-3.5.0.jar
+running spark submit: 
+/opt/spark/bin/spark-submit --class com.example.CsvToAvroApp /app/app.jar

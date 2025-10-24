@@ -11,4 +11,9 @@ COPY --from=builder /app/target/scala-2.12/spark-csv-to-avro-assembly-0.1.jar /a
 COPY src/main/resources/application.conf /app/application.conf
 COPY src/main/resources/log4j2.properties /app/log4j2.properties
 COPY data /app/data
+USER root
+RUN mkdir -p /home/spark/.ivy2/cache && \
+    chown spark:spark /home/spark/.ivy2/cache && \
+    wget https://repo1.maven.org/maven2/org/apache/spark/spark-avro_2.12/3.5.0/spark-avro_2.12-3.5.0.jar -P /opt/spark/jars/
+USER spark
 CMD ["/opt/spark/bin/spark-submit", "--class", "com.example.CsvToAvroApp", "--driver-java-options", "-Dlog4j.configurationFile=/app/log4j2.properties -Dlog4j.debug=true", "/app/app.jar"]

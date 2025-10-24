@@ -1,3 +1,7 @@
+change in docker-compose.yml:
+add:
+command: ["sleep", "infinity"]
+
 inside container: 
 scala shell:
 /opt/spark/bin/spark-shell --jars /opt/spark/jars/spark-avro_2.12-3.5.0.jar

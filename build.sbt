@@ -12,6 +12,7 @@ libraryDependencies ++= Seq(
   "org.apache.logging.log4j" % "log4j-slf4j2-impl" % "2.20.0",
   "org.apache.logging.log4j" % "log4j-core" % "2.20.0",
   "org.apache.logging.log4j" % "log4j-api" % "2.20.0",
+  "com.github.scopt" %% "scopt" % "4.1.0",  // Added for command-line arg parsing
   "org.scalatest" %% "scalatest" % "3.2.18" % Test
 )
 

@@ -6,7 +6,7 @@
 # =====================================================
 
 # Container name (adjust if different in docker-compose)
-CONTAINER_NAME="spark_app"
+CONTAINER_NAME="spark-app"
 
 # Avro data path (relative to container)
 AVRO_PATH="data/output/processing_date=2025-10-24"

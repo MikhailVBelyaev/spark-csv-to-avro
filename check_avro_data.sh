@@ -13,7 +13,15 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-AVRO_PATH="data/output/processing_date=$1"
+DATE="$1"
+
+# Find the output folder matching the date
+AVRO_PATH=$(find data/output -type d -name "*${DATE}*")
+
+if [ -z "$AVRO_PATH" ]; then
+  echo "❗ No output folder found matching date '${DATE}'"
+  exit 1
+fi
 
 # Save script in project so it's visible inside container
 SCRIPT_DIR="data/scripts"

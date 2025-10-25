@@ -25,18 +25,28 @@ object CsvToAvroApp {
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
 
-    // Command-line arg parsing
+    // Command-line arg parsing with scopt 4.1.0
     val builder = OParser.builder[AppConfig]
     val parser = {
       import builder._
-      OParser.setupParser("CsvToAvroApp", "0.1", options =
-        Seq(
-          opt[String]('s', "sourceDir").action((x, c) => c.copy(sourceDir = x)).text("Source directory"),
-          opt[String]('d', "destDir").action((x, c) => c.copy(destDir = x)).text("Destination directory"),
-          opt[String]('l', "delimiter").action((x, c) => c.copy(delimiter = x)).text("Delimiter"),
-          opt[String]('k', "dedupKey").action((x, c) => c.copy(dedupKey = x)).text("Deduplication key"),
-          opt[String]('p', "partitionCol").action((x, c) => c.copy(partitionCol = x)).text("Partition column")
-        )
+      OParser.sequence(
+        programName("CsvToAvroApp"),
+        head("CsvToAvroApp", "0.1"),
+        opt[String]('s', "sourceDir")
+          .action((x, c) => c.copy(sourceDir = x))
+          .text("Source directory"),
+        opt[String]('d', "destDir")
+          .action((x, c) => c.copy(destDir = x))
+          .text("Destination directory"),
+        opt[String]('l', "delimiter")
+          .action((x, c) => c.copy(delimiter = x))
+          .text("Delimiter"),
+        opt[String]('k', "dedupKey")
+          .action((x, c) => c.copy(dedupKey = x))
+          .text("Deduplication key"),
+        opt[String]('p', "partitionCol")
+          .action((x, c) => c.copy(partitionCol = x))
+          .text("Partition column")
       )
     }
 
@@ -81,9 +91,9 @@ object CsvToAvroApp {
 
         logger.info(s"✅ Process completed. Output written to $outputDir")
         spark.stop()
-      case _ =>
+      case None =>
         // Invalid args, print usage
-        OParser.usage(parser, "CsvToAvroApp")
+        OParser.usage(parser)
         sys.exit(1)
     }
   }

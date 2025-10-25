@@ -1,5 +1,7 @@
-id,name,price,created_date
-1,Car A,12000.5,2025-10-20
-2,Car B,13500.0,2025-10-21
-2,Car B,13500.0,2025-10-21
-3,Car C,14000.0,2025-10-22
+id,name,price,age,height,is_active,created_date,updated_at,balance
+1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+2,Bob,invalid,30,1.75,false,2023-01-02,2023-01-02 12:00:00,456.78
+3,Charlie,150.50,,1.80,true,invalid,2023-01-03 14:15:00,789.12
+4,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45  // Duplicate
+5,David,200.25,40,1.90,not_a_boolean,2023-01-04,invalid,999.99
+,,300.00,50,2.00,true,2023-01-05,2023-01-05 16:00:00,0.00  // Malformed (missing id)

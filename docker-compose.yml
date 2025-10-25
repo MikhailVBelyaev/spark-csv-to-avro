@@ -3,7 +3,7 @@ services:
     build: .
     container_name: spark_csv_to_avro
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:delegated
     environment:
       - SPARK_LOCAL_IP=127.0.0.1
     command: [

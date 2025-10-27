@@ -223,10 +223,10 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val inputPath = s"$tempDir/input/sample.csv"
       val outputPath = s"$tempDir/output"
       Files.createDirectories(Paths.get(s"$tempDir/input"))
-      val df = Seq((
-        "1", "Alice", "99.99", "25", "1.65", "true", "2023-01-01", "2023-01-01 10:30:00", "123.45",
-        "2", "Bob", "invalid", "30", "1.75", "false", "2023-01-02", "2023-01-02 12:00:00", "456.78"
-      )).toDF("id", "name", "price", "age", "height", "is_active", "created_date", "updated_at", "balance")
+      val df = Seq(
+        ("1", "Alice", "99.99", "25", "1.65", "true", "2023-01-01", "2023-01-01 10:30:00", "123.45"),
+        ("2", "Bob", "invalid", "30", "1.75", "false", "2023-01-02", "2023-01-02 12:00:00", "456.78")
+        ).toDF("id", "name", "price", "age", "height", "is_active", "created_date", "updated_at", "balance")
       df.write
         .option("header", "true")
         .option("delimiter", ",")

@@ -148,13 +148,13 @@ object CsvToAvroApp {
           case _ => StringType  // Fallback
         }
 
-        // Safe cast: set to null on failure
-        result = result.withColumn(colName, col(colName).cast(castType))
-        // For date/timestamp with format
+        // Safe cast: set to null on failure - skip initial cast for Date/Timestamp with custom formats
         if (castExpr == "DateType" && fmt.nonEmpty) {
           result = result.withColumn(colName, to_date(col(colName), fmt))
         } else if (castExpr == "TimestampType" && fmt.nonEmpty) {
           result = result.withColumn(colName, to_timestamp(col(colName), fmt))
+        } else {
+          result = result.withColumn(colName, col(colName).cast(castType))
         }
 
         // Detect failures: where cast is null but orig was not

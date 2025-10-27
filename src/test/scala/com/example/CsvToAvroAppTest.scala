@@ -2,11 +2,12 @@ package com.example
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.BeforeAndAfterAll
-import org.apache.spark.sql.{SparkSession, DataFrame}
+import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.types._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
+import java.math.BigDecimal as JavaBigDecimal
 
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -28,11 +29,10 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     try {
       testCode(tempDir)
     } finally {
-      // Clean up
+      // Clean up recursively
       Files.walk(Paths.get(tempDir))
-        .filter(Files.isRegularFile(_))
+        .sorted(java.util.Comparator.reverseOrder())
         .forEach(Files.deleteIfExists(_))
-      Files.deleteIfExists(Paths.get(tempDir))
     }
   }
 
@@ -91,7 +91,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(row.getAs[Boolean]("is_active"))
     assert(row.getAs[Date]("created_date") == Date.valueOf("2023-01-01"))
     assert(row.getAs[Timestamp]("updated_at") == Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(row.getAs[BigDecimal]("balance") == BigDecimal("123.45"))
+    assert(row.getAs[JavaBigDecimal]("balance") == new JavaBigDecimal("123.45"))
     assert(errorCount == 0)
   }
 
@@ -185,11 +185,19 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   test("Deduplication and validation in process") {
-    val df = Seq(
-      (1, "Alice"),
-      (1, "Bob"), // Duplicate id
-      (null, "Charlie") // Null id
-    ).toDF("id", "name")
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true),
+      StructField("name", StringType, nullable = true)
+    ))
+    val data = Seq(
+      Row(1, "Alice"),
+      Row(1, "Bob"),
+      Row(null, "Charlie")
+    )
+    val df = spark.createDataFrame(
+      spark.sparkContext.parallelize(data),
+      schema
+    )
 
     val confStr =
       """
@@ -227,8 +235,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
       // Run main pipeline
       CsvToAvroApp.main(Array(
-        "--sourceDir", s"input",
-        "--destDir", s"output",
+        "--sourceDir", s"$tempDir/input",
+        "--destDir", s"$tempDir/output",
         "--delimiter", ",",
         "--dedupKey", "id",
         "--partitionCol", "processing_timestamp"

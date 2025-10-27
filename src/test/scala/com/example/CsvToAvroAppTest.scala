@@ -7,7 +7,6 @@ import org.apache.spark.sql.types._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
-import java.math.BigDecimal => JavaBigDecimal
 
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -91,7 +90,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(row.getAs[Boolean]("is_active"))
     assert(row.getAs[Date]("created_date") == Date.valueOf("2023-01-01"))
     assert(row.getAs[Timestamp]("updated_at") == Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(row.getAs[JavaBigDecimal]("balance") == new JavaBigDecimal("123.45"))
+    assert(row.getAs[java.math.BigDecimal]("balance") == new java.math.BigDecimal("123.45"))
     assert(errorCount == 0)
   }
 

@@ -220,9 +220,9 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   test("Integration test: Full pipeline") {
     withTempDir { tempDir =>
       // Create sample CSV
-      val inputPath = s"$tempDir/input/sample.csv"
-      val outputPath = s"$tempDir/output"
-      Files.createDirectories(Paths.get(s"$tempDir/input"))
+      val inputPath = s"/app/$tempDir/input/sample.csv"
+      val outputPath = s"/app/$tempDir/output"
+      Files.createDirectories(Paths.get(s"/app/$tempDir/input"))
       val df = Seq(
         ("1", "Alice", "99.99", "25", "1.65", "true", "2023-01-01", "2023-01-01 10:30:00", "123.45"),
         ("2", "Bob", "invalid", "30", "1.75", "false", "2023-01-02", "2023-01-02 12:00:00", "456.78")
@@ -234,8 +234,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
       // Run main pipeline
       CsvToAvroApp.main(Array(
-        "--sourceDir", s"$tempDir/input",
-        "--destDir", s"$tempDir/output",
+        "--sourceDir", s"/app/$tempDir/input",
+        "--destDir", s"/app/$tempDir/output",
         "--delimiter", ",",
         "--dedupKey", "id",
         "--partitionCol", "processing_timestamp"

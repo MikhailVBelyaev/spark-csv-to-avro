@@ -157,7 +157,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       "invalid","Alice","invalid","invalid","invalid","invalid",
       "invalid","invalid","invalid"
     )).toDF("id","name","price","age","height","is_active",
-            "createdונות","updated_at","balance")
+            "created_date","updated_at","balance")
 
     val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
 

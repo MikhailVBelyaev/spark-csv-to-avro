@@ -21,6 +21,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     .getOrCreate()
 
   import spark.implicits._
+  import org.apache.spark.sql.functions._
 
   override def afterAll(): Unit = {
     spark.stop()

@@ -132,6 +132,24 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
+  // OPTIONAL: 2.1. Keep debug test to verify timezone — can be removed later
+  // -------------------------------------------------------------------------
+  test("Timezone debug") {
+    val ts = Timestamp.valueOf("2023-01-01 10:30:00")
+    println(s"Java Timestamp: $ts")
+    println(s"Epoch: ${ts.getTime}")
+
+    val df = Seq(("2023-01-01 10:30:00")).toDF("ts").withColumn("ts", col("ts").cast(StringType))
+    val parsed = df.withColumn("p", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
+    parsed.show()
+
+    val row = parsed.first()
+    val sparkTs = row.getTimestamp(1)
+    println(s"Spark Timestamp: $sparkTs")
+    println(s"Epoch: ${sparkTs.getTime}")
+  }
+
+  // -------------------------------------------------------------------------
   // 3. Invalid data → null + error count
   // -------------------------------------------------------------------------
   test("invalid data → null + error count") {

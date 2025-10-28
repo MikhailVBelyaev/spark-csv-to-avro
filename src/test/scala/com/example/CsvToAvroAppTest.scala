@@ -113,7 +113,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
         |   created_date = "DateType:yyyy-MM-dd"
         |   alt_date = "DateType:dd/MM/yyyy"
         |   updated_at = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |   alt_timestamp = "TimestampType:dd-MM-yyyy HH:mm"
+        |   alt_timestamp = "TimestampType:dd-MM-yyyy HH:mm:ss"
         | }
         |}
         |""".stripMargin

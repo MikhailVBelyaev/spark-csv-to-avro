@@ -4,6 +4,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.BeforeAndAfterAll
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
@@ -15,13 +16,13 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
     .appName("TestApp")
-    .config("spark.sql.session.timeZone", "UTC+5")
+    .config("spark.sql.session.timeZone", "UTC+5")  // MODIFIED: Match main app timezone
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
     .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()
 
   import spark.implicits._
-  import org.apache.spark.sql.functions._
+  import org.apache.spark.sql.functions._  // ADDED: Required for col(), to_timestamp, etc.
 
   override def afterAll(): Unit = {
     spark.stop()
@@ -41,17 +42,14 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   test("Type casting for all supported types") {
-    val df = Seq((
-      "1",           // id: IntegerType
-      "Alice",       // name: StringType
-      "99.99",       // price: DoubleType
-      "25",          // age: LongType
-      "1.65",        // height: FloatType
-      "true",        // is_active: BooleanType
-      "2023-01-01",  // created_date: DateType
-      "2023-01-01 10:30:00", // updated_at: TimestampType
-      "123.45"       // balance: DecimalType(10,2)
+    // ADDED: Create DataFrame with all columns as StringType to avoid inferSchema interference
+    val rawDf = Seq((
+      "1", "Alice", "99.99", "25", "1.65", "true", "2023-01-01", "2023-01-01 10:30:00", "123.45"
     )).toDF("id", "name", "price", "age", "height", "is_active", "created_date", "updated_at", "balance")
+
+    val df = rawDf.select(
+      rawDf.columns.map(c => col(c).cast(StringType)): _*
+    )
 
     val confStr =
       """
@@ -100,12 +98,14 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   test("Date and timestamp parsing with different formats") {
-    val df = Seq((
-      "2023-01-01",       // created_date: DateType (yyyy-MM-dd)
-      "01/02/2023",       // alt_date: DateType (dd/MM/yyyy)
-      "2023-01-01 10:30:00", // updated_at: TimestampType (yyyy-MM-dd HH:mm:ss)
-      "01-02-2023 12:00:00"  // alt_timestamp: TimestampType (dd-MM-yyyy HH:mm:ss)
+    // ADDED: Force all columns to StringType
+    val rawDf = Seq((
+      "2023-01-01", "01/02/2023", "2023-01-01 10:30:00", "01-02-2023 12:00:00"
     )).toDF("created_date", "alt_date", "updated_at", "alt_timestamp")
+
+    val df = rawDf.select(
+      rawDf.columns.map(c => col(c).cast(StringType)): _*
+    )
 
     val confStr =
       """
@@ -137,12 +137,13 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(errorCount == 0)
   }
 
+  // OPTIONAL: Keep debug test to verify timezone — can be removed later
   test("Timezone debug") {
     val ts = Timestamp.valueOf("2023-01-01 10:30:00")
     println(s"Java Timestamp: $ts")
     println(s"Epoch: ${ts.getTime}")
 
-    val df = Seq(("2023-01-01 10:30:00")).toDF("ts")
+    val df = Seq(("2023-01-01 10:30:00")).toDF("ts").withColumn("ts", col("ts").cast(StringType))
     val parsed = df.withColumn("p", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
     parsed.show()
 
@@ -153,17 +154,14 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   test("Type casting with invalid data") {
-    val df = Seq((
-      "invalid",     // id: IntegerType (fails)
-      "Alice",       // name: StringType
-      "invalid",     // price: DoubleType (fails)
-      "invalid",     // age: LongType (fails)
-      "invalid",     // height: FloatType (fails)
-      "invalid",     // is_active: BooleanType (fails)
-      "invalid",     // created_date: DateType (fails)
-      "invalid",     // updated_at: TimestampType (fails)
-      "invalid"      // balance: DecimalType(10,2) (fails)
+    // ADDED: Force all columns to StringType
+    val rawDf = Seq((
+      "invalid", "Alice", "invalid", "invalid", "invalid", "invalid", "invalid", "invalid", "invalid"
     )).toDF("id", "name", "price", "age", "height", "is_active", "created_date", "updated_at", "balance")
+
+    val df = rawDf.select(
+      rawDf.columns.map(c => col(c).cast(StringType)): _*
+    )
 
     val confStr =
       """
@@ -239,14 +237,12 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
   test("Integration test: Full pipeline") {
     withTempDir { tempDir =>
-      // Use RELATIVE paths that will be prefixed with /app by the app
       val inputRelPath = s"test-input-${java.util.UUID.randomUUID().toString.take(8)}"
       val outputRelPath = s"test-output-${java.util.UUID.randomUUID().toString.take(8)}"
 
       val inputPath = s"/app/$inputRelPath"
       val outputPath = s"/app/$outputRelPath"
 
-      // Clean up any old test dirs
       try { java.nio.file.Files.walk(Paths.get(inputPath)).sorted(java.util.Comparator.reverseOrder()).forEach(Files.deleteIfExists(_)) } catch { case _: Throwable => }
       try { java.nio.file.Files.walk(Paths.get(outputPath)).sorted(java.util.Comparator.reverseOrder()).forEach(Files.deleteIfExists(_)) } catch { case _: Throwable => }
 
@@ -263,7 +259,6 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
         .option("delimiter", ",")
         .csv(inputPath)
 
-      // Pass RELATIVE paths — app will add /app/
       CsvToAvroApp.main(Array(
         "--sourceDir", inputRelPath,
         "--destDir", outputRelPath,

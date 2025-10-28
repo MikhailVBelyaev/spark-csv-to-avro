@@ -56,6 +56,7 @@ object CsvToAvroApp {
           .appName("CsvToAvroApp")
           .master(sys.env.getOrElse("SPARK_MASTER_URL", "local[*]"))
           .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
+          .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
           .getOrCreate()
 
         // Override conf with CLI args if provided

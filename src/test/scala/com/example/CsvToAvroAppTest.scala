@@ -14,6 +14,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     .master("local[*]")
     .appName("TestApp")
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
+    .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()
 
   import spark.implicits._
@@ -238,6 +239,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       ).toDF("id", "name", "price", "age", "height", "is_active", "created_date", "updated_at", "balance")
 
       df.write
+        .mode("overwrite")
         .option("header", "true")
         .option("delimiter", ",")
         .csv(inputPath)

@@ -91,7 +91,12 @@ object CsvToAvroApp {
         logger.info(s"Records written: $writtenCount")
 
         logger.info(s"✅ Process completed. Output written to $outputDir")
-        spark.stop()
+        
+        // Stop Spark only if not running inside tests
+        if (!sys.props.contains("spark.test.active")) {
+          spark.stop()
+        }
+        // spark.stop()
       case None =>
         // Invalid args, print usage
         OParser.usage(parser)

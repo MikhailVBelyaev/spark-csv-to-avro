@@ -9,6 +9,8 @@ import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
 
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
+  
+  System.setProperty("spark.test.active", "true")
 
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
@@ -20,8 +22,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   import spark.implicits._
 
   override def afterAll(): Unit = {
-    // This line give error in intergration test
-    // spark.stop()
+    spark.stop()
   }
 
   // Helper to create a temporary directory

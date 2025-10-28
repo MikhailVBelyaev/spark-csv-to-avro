@@ -1,106 +1,94 @@
-# 🚗 Spark CSV → Avro Converter
+# Spark CSV to Avro Converter
 
-A **Dockerized Apache Spark job** (Scala 2.12, Spark 3.5) that reads CSV files, validates data, casts columns, removes duplicates, and writes the processed data in **Avro format**.
+A **Docker-ised Apache Spark job** (Scala 2.12 + Spark 3.5) that:
 
-## 🧱 Tech Stack
-- **Language:** Scala 2.12  
-- **Framework:** Apache Spark 3.5  
-- **Input:** CSV  
-- **Output:** Avro  
-- **Configuration:** HOCON (`application.conf`)  
-- **Build Tool:** sbt  
-- **Containerization:** Docker + Docker Compose  
+1. Reads **CSV** files from `data/input`
+2. **Casts** columns according to a **schema-mapping** (HOCON)
+3. **Validates** data (nulls in dedup key → filtered, malformed rows → null)
+4. **Deduplicates** by a configurable key
+5. Adds a **processing-timestamp** column
+6. Writes **Avro** files (partitioned by the timestamp) to `data/output`
 
 ---
 
-## 📁 Project Structure
+## Tech Stack
 
-```
+| Component                | Version |
+|--------------------------|---------|
+| Scala                    | 2.12.18 |
+| Apache Spark             | 3.5.0   |
+| sbt                      | 1.6.2   |
+| Docker + Docker-Compose  | latest  |
+| Config                   | Typesafe Config (HOCON) |
+| Logging                  | Log4j2  |
+| CLI parsing              | scopt 4.1.0 |
+
+---
+
+## Project Layout
 spark-csv-to-avro/
 ├── data/
-│   ├── input/                      # Input CSV files
-│   ├── output/                     # Generated Avro files
-│   └── scripts/                    # Spark Scala scripts (e.g. check_avro.scala)
-├── src/                            # Scala source code
+│   ├── input/          # Put your CSV files here
+│   ├── output/         # Avro files appear here
+│   └── scripts/        # Generated helper scripts (check_avro.scala)
+├── src/
+│   ├── main/
+│   │   └── scala/com/example/CsvToAvroApp.scala
+│   └── test/
+│       └── scala/com/example/CsvToAvroAppTest.scala
 ├── Dockerfile
 ├── docker-compose.yml
 ├── build.sbt
-├── check_avro_data.sh              # Script to inspect Avro data
+├── check_avro_data.sh
+├── init_data_dir.sh
 └── README.md
-```
+
 
 ---
 
-## 👤 Spark User and File Permissions
+## Prerequisites
 
-The Spark container runs under **user ID `185` (spark)** for security and reproducibility.  
-To ensure proper read/write access, make sure the `data/` directory is owned by your local user.
-
-Run this once before starting the project:
-
-```bash
-sudo chown -R $USER:$USER data
-chmod -R 775 data
-```
-
-This ensures both your local user and the containerized Spark process can read/write files in `data/input` and `data/output`.
+- Docker & Docker-Compose (any recent version)
+- `sudo` rights for the one-time permission fix
 
 ---
 
-## ▶️ Run Spark Job
-
-To build and start the Spark job:
+## One-time Setup
 
 ```bash
+# 1. Fix permissions so the Spark container (uid 185) can write to data/output
+bash init_data_dir.sh
+
+# 2. (Optional) Put sample CSV into data/input
+cp data/input/sample.csv data/input/
+
+How to Run Locally
+
+# Build images & run the job
 docker compose up --build
-```
 
-This command:
-- Builds the Spark image
-- Mounts the `data/` directory
-- Executes the Scala Spark job that processes CSV → Avro
+The job reads all CSV files under data/input.
+Output is written to data/output/processing_timestamp=….
 
----
+Example Usage
+1. Full pipeline (default config)
+docker compose up --build
 
-## 🔍 Check Avro Data
+Input: data/input/sample.csv
+Output: data/output/processing_timestamp=2025-10-28/...
 
-You can inspect an Avro output file directly using the helper script:
+2. Inspect Avro output
+bash check_avro_data.sh 2025-10-28
 
-```bash
-bash check_avro_data.sh 2025-10-24
-```
+Running Tests
 
-This will:
-- Generate a temporary Scala script (`data/scripts/check_avro.scala`)
-- Launch a Spark container with `spark-shell`
-- Load the Avro file from `data/output/processing_date=2025-10-24`
-- Display the schema and sample data
+docker compose up spark-test
 
-Example output:
+Generating ScalaDoc
 
-```
-===== DATA PREVIEW =====
-+---+-----+-------+------------+
-|id |name |price  |created_date|
-+---+-----+-------+------------+
-|1  |Car A|12000.5|2025-10-20  |
-|2  |Car B|13500.0|2025-10-21  |
-|3  |Car C|14000.0|2025-10-22  |
-+---+-----+-------+------------+
+sbt doc
 
-===== SCHEMA =====
-root
- |-- id: integer (nullable = true)
- |-- name: string (nullable = true)
- |-- price: double (nullable = true)
- |-- created_date: date (nullable = true)
-```
+HTML documentation appears in target/scala-2.12/api/.
 
----
-
-## 🧩 Notes
-- All Spark code runs inside the container — no Spark installation required locally.
-- Data persistence between runs is handled through the `data/` volume.
-- You can freely modify and re-run the CSV → Avro conversion pipeline.
-
----
+License
+MIT – see LICENSE.

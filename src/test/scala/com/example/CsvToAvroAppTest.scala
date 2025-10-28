@@ -20,7 +20,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   import spark.implicits._
 
   override def afterAll(): Unit = {
-    spark.stop()
+    // This line give error in intergration test
+    // spark.stop()
   }
 
   // Helper to create a temporary directory

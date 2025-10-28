@@ -100,8 +100,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     val df = Seq((
       "2023-01-01",       // created_date: DateType (yyyy-MM-dd)
       "01/02/2023",       // alt_date: DateType (dd/MM/yyyy)
-      "2023-01-01 10:30", // updated_at: TimestampType (yyyy-MM-dd HH:mm)
-      "01-02-2023 12:00"  // alt_timestamp: TimestampType (dd-MM-yyyy HH:mm)
+      "2023-01-01 10:30:00", // updated_at: TimestampType (yyyy-MM-dd HH:mm:ss)
+      "01-02-2023 12:00:00"  // alt_timestamp: TimestampType (dd-MM-yyyy HH:mm:ss)
     )).toDF("created_date", "alt_date", "updated_at", "alt_timestamp")
 
     val confStr =

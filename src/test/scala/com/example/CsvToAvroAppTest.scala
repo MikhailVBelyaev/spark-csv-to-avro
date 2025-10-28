@@ -15,7 +15,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
     .appName("TestApp")
-    .config("spark.sql.session.timeZone", "UTC")
+    .config("spark.sql.session.timeZone", "UTC+5")
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
     .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()
@@ -134,6 +134,21 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(row.getAs[Timestamp]("updated_at") == Timestamp.valueOf("2023-01-01 10:30:00"))
     assert(row.getAs[Timestamp]("alt_timestamp") == Timestamp.valueOf("2023-02-01 12:00:00"))
     assert(errorCount == 0)
+  }
+
+  test("Timezone debug") {
+    val ts = Timestamp.valueOf("2023-01-01 10:30:00")
+    println(s"Java Timestamp: $ts")
+    println(s"Epoch: ${ts.getTime}")
+
+    val df = Seq(("2023-01-01 10:30:00")).toDF("ts")
+    val parsed = df.withColumn("p", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
+    parsed.show()
+
+    val row = parsed.first()
+    val sparkTs = row.getTimestamp(1)
+    println(s"Spark Timestamp: $sparkTs")
+    println(s"Epoch: ${sparkTs.getTime}")
   }
 
   test("Type casting with invalid data") {

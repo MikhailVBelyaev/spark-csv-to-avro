@@ -15,6 +15,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
     .appName("TestApp")
+    .config("spark.sql.session.timeZone", "UTC+5")
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
     .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()

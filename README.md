@@ -236,6 +236,3 @@ Mikhail Belyaev
 GitHub: https://github.com/MikhailVBelyaev
 
 ⸻
-
-✅ You can now copy this entire text and paste it directly into your README.md.
-It’s clean Markdown (no code boxes, no chat formatting), formatted like official Apache project docs.

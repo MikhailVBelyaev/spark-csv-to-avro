@@ -12,9 +12,11 @@ Summary of What's Now Working ✅
 
 
 
-
-
-
-
-Result: 
+Result check avro files:
 ![alt text](images/result_avro_file.png)
+
+The last check: 
+![alt text](result_avro_file2.png)
+
+Generate scala's docs:
+![alt text](images/generation_scala_doc.png)

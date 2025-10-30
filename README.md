@@ -206,11 +206,11 @@ Generate ScalaDoc	sbt doc
 
 To generate API documentation:
 
-bash generate_doc.sh
+sudo bash generate_doc.sh
 
 The output will be available in:
 
-open data/doc/index.html
+open /docs/index.html
 
 ⸻
 

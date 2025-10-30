@@ -206,11 +206,11 @@ Generate ScalaDoc	sbt doc
 
 To generate API documentation:
 
-sbt doc
+bash generate_doc.sh
 
 The output will be available in:
 
-target/scala-2.12/api/
+open data/doc/index.html
 
 ⸻
 
@@ -232,7 +232,7 @@ See LICENSE for details.
 
 13. Author
 
-Mikhail Belyaev
+Mihail Belyaev
 GitHub: https://github.com/MikhailVBelyaev
 
 ⸻

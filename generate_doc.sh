@@ -26,6 +26,12 @@ docker compose run --rm -v "$(pwd)/data:/app/data" $CONTAINER_NAME bash -c "
 echo "🔍 Checking if documentation was generated..."
 if [ -n "$(ls -A $DOC_OUTPUT_DIR 2>/dev/null)" ]; then
   echo "✅ Documentation successfully generated and saved to $DOC_OUTPUT_DIR"
+  echo "📂 Copying documentation to local project folder (docs/)..."
+  mkdir -p docs
+  cp -r "$DOC_OUTPUT_DIR"/* docs/
+  sudo chown -R $USER:$USER docs
+  chmod -R a+rX docs
+  echo "✅ Documentation copied to docs/ with correct permissions."
 else
   echo "❌ No documentation found in $DOC_OUTPUT_DIR. Check sbt output or volume mapping."
   exit 1

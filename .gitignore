@@ -7,3 +7,5 @@ hs_err_pid*
 .metals/
 .vscode/
 data/output/
+data/scritps/
+data/doc/

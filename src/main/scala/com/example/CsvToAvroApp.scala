@@ -20,10 +20,40 @@ object CsvToAvroApp {
     partitionCol: String = "processing_timestamp"
   )
 
+  def buildSchema(schemaConfig: Config): StructType = {
+    import scala.collection.JavaConverters._
+    val fields = schemaConfig.entrySet().asScala.toSeq.map { entry =>
+      val name = entry.getKey
+      val raw = schemaConfig.getString(name)
+      val parts = raw.split(":")
+      val typeName = parts(0)
+      val fmt = if (parts.length > 1) parts(1) else ""
+
+      val dataType = typeName match {
+        case "StringType" => StringType
+        case "IntegerType" => IntegerType
+        case "LongType" => LongType
+        case "DoubleType" => DoubleType
+        case "FloatType" => FloatType
+        case "BooleanType" => BooleanType
+        case "DateType" => DateType
+        case "TimestampType" => TimestampType
+        case "DecimalType" =>
+          val Array(prec, scale) = fmt.split(",").map(_.trim.toInt)
+          DecimalType(prec, scale)
+        case _ => StringType
+      }
+
+      StructField(name, dataType, nullable = true)
+    }
+    StructType(fields)
+  }
+
   def main(args: Array[String]): Unit = {
     val conf = ConfigFactory.load().getConfig("app")
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
+    val schema = buildSchema(conf.getConfig("schemaMapping"))
 
     // Command-line arg parsing with scopt 4.1.0
     val builder = OParser.builder[AppConfig]
@@ -71,9 +101,10 @@ object CsvToAvroApp {
           .format("csv")
           .option("header", "true")
           .option("delimiter", delimiter)
-          .option("inferSchema", "true")
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
+          .option("enforceSchema", "true")
+          .schema(schema)
 
         val df = readStart.load(inputDir)
 
@@ -84,7 +115,7 @@ object CsvToAvroApp {
           if (hasCorrupt) {
             val corrupted = df.filter(col("_corrupt_record").isNotNull)
 
-            if (!corrupted.isEmpty) {
+            if (corrupted.take(1).nonEmpty) {
               val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
               logger.warn(s"Saving corrupted rows to: $corruptPath")
               corrupted.write.mode("overwrite").json(corruptPath)

@@ -72,16 +72,30 @@ object CsvToAvroApp {
           .option("header", "true")
           .option("delimiter", delimiter)
           .option("inferSchema", "true")
-          .option("mode", "DROPMALFORMED")  // Handle malformed gracefully
+          .option("mode", "PERMISSIVE")
+          .option("columnNameOfCorruptRecord", "_corrupt_record")
 
         val df = readStart.load(inputDir)
-        val readCount = df.count()
+
+        // Extract corrupted rows before processing
+        val corrupted = df.filter(col("_corrupt_record").isNotNull)
+
+        if (corrupted.count() > 0) {
+          val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
+          logger.warn(s"Saving corrupted rows to: $corruptPath")
+          corrupted.write.mode("overwrite").json(corruptPath)
+        }
+
+        // Remove corrupted rows from main dataframe
+        val df_clean = df.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+
+        val readCount = df_clean.count()
         logger.info(s"Records read: $readCount")
 
         val malformedCount = Try(readStart.option("mode", "PERMISSIVE").load(inputDir).count() - readCount).getOrElse(0L)
         if (malformedCount > 0) logger.warn(s"Malformed records dropped: $malformedCount")
 
-        val cleaned = process(df, conf.getConfig("schemaMapping"), dedupKey, partitionCol, globalDateFmt, globalTsFmt)
+        val cleaned = process(df_clean, conf.getConfig("schemaMapping"), dedupKey, partitionCol, globalDateFmt, globalTsFmt)
         cleaned.write
           .format("avro")
           .mode("overwrite")

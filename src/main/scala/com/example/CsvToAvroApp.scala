@@ -77,18 +77,23 @@ object CsvToAvroApp {
 
         val df = readStart.load(inputDir)
 
-        // Extract corrupted rows before processing
-        val corrupted = df.filter(col("_corrupt_record").isNotNull)
+        // Handle corrupted rows only if Spark created the column
+        val hasCorrupt = df.columns.contains("_corrupt_record")
 
-        if (corrupted.count() > 0) {
-          val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
-          logger.warn(s"Saving corrupted rows to: $corruptPath")
-          corrupted.write.mode("overwrite").json(corruptPath)
-        }
+        val df_clean =
+          if (hasCorrupt) {
+            val corrupted = df.filter(col("_corrupt_record").isNotNull)
 
-        // Remove corrupted rows from main dataframe
-        val df_clean = df.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+            if (!corrupted.isEmpty) {
+              val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
+              logger.warn(s"Saving corrupted rows to: $corruptPath")
+              corrupted.write.mode("overwrite").json(corruptPath)
+            }
 
+            df.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+          } else {
+            df
+          }
         val readCount = df_clean.count()
         logger.info(s"Records read: $readCount")
 

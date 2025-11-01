@@ -98,7 +98,6 @@ object CsvToAvroApp {
         val partitionCol = cliConfig.partitionCol
 
         // --- CORRUPTED ROW HANDLING USING SPARK CSV ONLY ---
-        // First load with corrupt-record capturing
         val df_raw = spark.read
           .format("csv")
           .option("header", "true")
@@ -108,17 +107,24 @@ object CsvToAvroApp {
           .schema(schema)
           .load(inputDir)
 
-        // Rows where _corrupt_record is not null → corrupted
-        val corrupted = df_raw.filter(col("_corrupt_record").isNotNull)
+        // Safe check: Spark may NOT create _corrupt_record when schema is strict
+        val hasCorrupt = df_raw.columns.contains("_corrupt_record")
+
+        val (df_clean, corrupted) =
+          if (hasCorrupt) {
+            val bad = df_raw.filter(col("_corrupt_record").isNotNull)
+            val good = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+            (good, bad)
+          } else {
+            // No corrupt-record column → no malformed rows detected by parser
+            (df_raw, spark.emptyDataFrame)
+          }
 
         if (!corrupted.isEmpty) {
           val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
           logger.warn(s"Saving corrupted rows to: $corruptPath")
           corrupted.write.mode("overwrite").json(corruptPath)
         }
-
-        // Clean rows: Spark will set correct row and set _corrupt_record = null
-        val df_clean = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
 
         val readCount = df_clean.count()
         logger.info(s"Records read (clean): $readCount")

@@ -97,48 +97,33 @@ object CsvToAvroApp {
         val dedupKey = cliConfig.dedupKey
         val partitionCol = cliConfig.partitionCol
 
-        val readStart = spark.read
+        // --- CORRUPTED ROW HANDLING USING SPARK CSV ONLY ---
+        // First load with corrupt-record capturing
+        val df_raw = spark.read
           .format("csv")
           .option("header", "true")
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
-          .option("escape", "\"")
-          .option("quote", "\"")
-          .option("multiLine", "false")
-          .option("parserLib", "univocity")
-          .option("enforceSchema", "true")
           .schema(schema)
+          .load(inputDir)
 
-        val df = readStart.load(inputDir)
+        // Rows where _corrupt_record is not null → corrupted
+        val corrupted = df_raw.filter(col("_corrupt_record").isNotNull)
 
-        // Align DataFrame columns to schema order by name
-        val df_aligned = {
-          val existing = orderedCols.filter(df.columns.contains)
-          df.select(existing.map(col): _*)
+        if (!corrupted.isEmpty) {
+          val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
+          logger.warn(s"Saving corrupted rows to: $corruptPath")
+          corrupted.write.mode("overwrite").json(corruptPath)
         }
 
-        // Handle corrupted rows only if Spark created the column
-        val hasCorrupt = df_aligned.columns.contains("_corrupt_record")
+        // Clean rows: Spark will set correct row and set _corrupt_record = null
+        val df_clean = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
 
-        val df_clean =
-          if (hasCorrupt) {
-            val corrupted = df_aligned.filter(col("_corrupt_record").isNotNull)
-
-            if (corrupted.take(1).nonEmpty) {
-              val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
-              logger.warn(s"Saving corrupted rows to: $corruptPath")
-              corrupted.write.mode("overwrite").json(corruptPath)
-            }
-
-            df_aligned.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
-          } else {
-            df_aligned
-          }
         val readCount = df_clean.count()
-        logger.info(s"Records read: $readCount")
+        logger.info(s"Records read (clean): $readCount")
 
-        val malformedCount = Try(readStart.option("mode", "PERMISSIVE").load(inputDir).count() - readCount).getOrElse(0L)
+        val malformedCount = Try(spark.read.format("csv").option("header", "true").option("delimiter", delimiter).option("mode", "PERMISSIVE").option("columnNameOfCorruptRecord", "_corrupt_record").schema(schema).load(inputDir).count() - readCount).getOrElse(0L)
         if (malformedCount > 0) logger.warn(s"Malformed records dropped: $malformedCount")
 
         val cleaned = process(df_clean, conf.getConfig("schemaMapping"), dedupKey, partitionCol, globalDateFmt, globalTsFmt)

@@ -51,8 +51,8 @@ object CsvToAvroApp {
     val conf = ConfigFactory.load().getConfig("app")
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
-    import scala.jdk.CollectionConverters._
-    val orderedCols = conf.getStringList("columns").asScala.toSeq
+    import scala.collection.JavaConverters._
+    val orderedCols = conf.getStringList("columns").asScala
     val schema = buildSchema(conf.getConfig("schemaMapping"), orderedCols)
 
     // Command-line arg parsing with scopt 4.1.0

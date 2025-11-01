@@ -102,9 +102,9 @@ object CsvToAvroApp {
           .format("csv")
           .option("header", "true")
           .option("delimiter", delimiter)
-          .option("mode", "PERMISSIVE")
+          .option("mode", "DROPMALFORMED")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
-          .option("enforceSchema", "false")
+          .option("enforceSchema", "true")
           .schema(schema)
           .load(inputDir)
 

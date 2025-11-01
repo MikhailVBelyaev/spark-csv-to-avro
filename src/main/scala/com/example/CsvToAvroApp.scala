@@ -100,11 +100,11 @@ object CsvToAvroApp {
         // --- CORRUPTED ROW HANDLING USING SPARK CSV ONLY ---
         val df_raw = spark.read
           .format("csv")
-          .option("header", "true")
+          .option("header", "false")
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
-          .option("enforceSchema", "false")
+          .option("enforceSchema", "true")
           .schema(schema)
           .load(inputDir)
 

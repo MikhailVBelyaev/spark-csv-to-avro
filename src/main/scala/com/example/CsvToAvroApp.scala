@@ -104,19 +104,18 @@ object CsvToAvroApp {
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
+          .option("enforceSchema", "false")
           .schema(schema)
           .load(inputDir)
 
-        // Safe check: Spark may NOT create _corrupt_record when schema is strict
         val hasCorrupt = df_raw.columns.contains("_corrupt_record")
 
         val (df_clean, corrupted) =
           if (hasCorrupt) {
-            val bad = df_raw.filter(col("_corrupt_record").isNotNull)
-            val good = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
-            (good, bad)
+            val corrupted = df_raw.filter(col("_corrupt_record").isNotNull)
+            val clean = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+            (clean, corrupted)
           } else {
-            // No corrupt-record column → no malformed rows detected by parser
             (df_raw, spark.emptyDataFrame)
           }
 

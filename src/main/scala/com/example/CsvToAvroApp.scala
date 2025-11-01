@@ -20,10 +20,8 @@ object CsvToAvroApp {
     partitionCol: String = "processing_timestamp"
   )
 
-  def buildSchema(schemaConfig: Config): StructType = {
-    import scala.collection.JavaConverters._
-    val fields = schemaConfig.entrySet().asScala.toSeq.map { entry =>
-      val name = entry.getKey
+  def buildSchema(schemaConfig: Config, ordered: Seq[String]): StructType = {
+    val fields = ordered.map { name =>
       val raw = schemaConfig.getString(name)
       val parts = raw.split(":")
       val typeName = parts(0)
@@ -53,7 +51,9 @@ object CsvToAvroApp {
     val conf = ConfigFactory.load().getConfig("app")
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
-    val schema = buildSchema(conf.getConfig("schemaMapping"))
+    import scala.jdk.CollectionConverters._
+    val orderedCols = conf.getStringList("columns").asScala.toSeq
+    val schema = buildSchema(conf.getConfig("schemaMapping"), orderedCols)
 
     // Command-line arg parsing with scopt 4.1.0
     val builder = OParser.builder[AppConfig]
@@ -114,9 +114,7 @@ object CsvToAvroApp {
 
         // Align DataFrame columns to schema order by name
         val df_aligned = {
-          val schemaCols = schema.fieldNames.toSeq
-          // Select only columns that exist in df
-          val existing = schemaCols.filter(df.columns.contains)
+          val existing = orderedCols.filter(df.columns.contains)
           df.select(existing.map(col): _*)
         }
 

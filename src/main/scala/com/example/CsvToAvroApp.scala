@@ -103,17 +103,29 @@ object CsvToAvroApp {
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
+          .option("escape", "\"")
+          .option("quote", "\"")
+          .option("multiLine", "false")
+          .option("parserLib", "univocity")
           .option("enforceSchema", "true")
           .schema(schema)
 
         val df = readStart.load(inputDir)
 
+        // Align DataFrame columns to schema order by name
+        val df_aligned = {
+          val schemaCols = schema.fieldNames.toSeq
+          // Select only columns that exist in df
+          val existing = schemaCols.filter(df.columns.contains)
+          df.select(existing.map(col): _*)
+        }
+
         // Handle corrupted rows only if Spark created the column
-        val hasCorrupt = df.columns.contains("_corrupt_record")
+        val hasCorrupt = df_aligned.columns.contains("_corrupt_record")
 
         val df_clean =
           if (hasCorrupt) {
-            val corrupted = df.filter(col("_corrupt_record").isNotNull)
+            val corrupted = df_aligned.filter(col("_corrupt_record").isNotNull)
 
             if (corrupted.take(1).nonEmpty) {
               val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
@@ -121,9 +133,9 @@ object CsvToAvroApp {
               corrupted.write.mode("overwrite").json(corruptPath)
             }
 
-            df.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+            df_aligned.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
           } else {
-            df
+            df_aligned
           }
         val readCount = df_clean.count()
         logger.info(s"Records read: $readCount")

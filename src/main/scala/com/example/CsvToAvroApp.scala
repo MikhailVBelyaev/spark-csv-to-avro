@@ -7,6 +7,7 @@ import com.typesafe.config.{Config, ConfigFactory}
 import scala.util.Try
 import org.apache.logging.log4j.{LogManager, Logger}
 import scopt.OParser
+import scala.jdk.CollectionConverters._
 
 object CsvToAvroApp {
 
@@ -219,10 +220,12 @@ object CsvToAvroApp {
       }
     }
 
-    val badDf = if (badRows.nonEmpty)
-      spark.createDataFrame(badRows.toSeq, result.schema)
-    else
+    val badDf = if (badRows.nonEmpty) {
+      val javaRows = badRows.toSeq.asJava
+      spark.createDataFrame(javaRows, result.schema)
+    } else {
       spark.emptyDataFrame
+    }
 
     (result, errorCount, badDf)
   }

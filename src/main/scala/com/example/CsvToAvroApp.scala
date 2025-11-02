@@ -109,6 +109,7 @@ object CsvToAvroApp {
         } else {
           (df_named, spark.emptyDataFrame)
         }
+        val stringSchema = df_clean_strings.schema
 
         // Save structural bad rows
         if (!df_structural_bad.isEmpty) {
@@ -119,7 +120,7 @@ object CsvToAvroApp {
 
         // --- CASTING + CAPTURE TYPE ERRORS ---
         val (df_typed, castErrorCount, df_cast_bad) = safeCastColumns(
-          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark)
+          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark, stringSchema)
 
         // Save casting errors
         if (!df_cast_bad.isEmpty) {
@@ -160,7 +161,8 @@ object CsvToAvroApp {
       config: Config,
       globalDateFmt: String,
       globalTsFmt: String,
-      spark: SparkSession
+      spark: SparkSession,
+      stringSchema: StructType
   ): (DataFrame, Long, DataFrame) = {
 
     import df.sparkSession.implicits._
@@ -222,7 +224,7 @@ object CsvToAvroApp {
 
     val badDf = if (badRows.nonEmpty) {
       val javaRows = badRows.toSeq.asJava
-      spark.createDataFrame(javaRows, result.schema)
+      spark.createDataFrame(javaRows, stringSchema)
     } else {
       spark.emptyDataFrame
     }

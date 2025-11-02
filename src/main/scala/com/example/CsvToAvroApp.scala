@@ -7,7 +7,7 @@ import com.typesafe.config.{Config, ConfigFactory}
 import scala.util.Try
 import org.apache.logging.log4j.{LogManager, Logger}
 import scopt.OParser
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 object CsvToAvroApp {
 

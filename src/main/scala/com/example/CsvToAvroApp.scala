@@ -216,7 +216,10 @@ object CsvToAvroApp {
           failures.take(5).foreach { row =>
             logger.warn(s"Failed row: ${row.mkString(", ")}")
           }
-          failures.take(100).foreach(badRows += _)  // collect for saving
+          // failures.take(100).foreach(badRows += _)  // collect for saving
+          val originalCols = stringSchema.fieldNames
+          val cleanFailures = failures.select(originalCols.map(col): _*)
+          cleanFailures.take(100).foreach(badRows += _)
         }
         result = result.drop(origCol)
       }

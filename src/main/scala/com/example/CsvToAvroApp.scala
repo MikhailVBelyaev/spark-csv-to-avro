@@ -55,28 +55,18 @@ object CsvToAvroApp {
     val orderedCols = conf.getStringList("columns").asScala
     val schema = buildSchema(conf.getConfig("schemaMapping"), orderedCols)
 
-    // Command-line arg parsing with scopt 4.1.0
+    // Command-line arg parsing
     val builder = OParser.builder[AppConfig]
     val parser = {
       import builder._
       OParser.sequence(
         programName("CsvToAvroApp"),
         head("CsvToAvroApp", "0.1"),
-        opt[String]('s', "sourceDir")
-          .action((x, c) => c.copy(sourceDir = x))
-          .text("Source directory"),
-        opt[String]('d', "destDir")
-          .action((x, c) => c.copy(destDir = x))
-          .text("Destination directory"),
-        opt[String]('l', "delimiter")
-          .action((x, c) => c.copy(delimiter = x))
-          .text("Delimiter"),
-        opt[String]('k', "dedupKey")
-          .action((x, c) => c.copy(dedupKey = x))
-          .text("Deduplication key"),
-        opt[String]('p', "partitionCol")
-          .action((x, c) => c.copy(partitionCol = x))
-          .text("Partition column")
+        opt[String]('s', "sourceDir").action((x, c) => c.copy(sourceDir = x)).text("Source directory"),
+        opt[String]('d', "destDir").action((x, c) => c.copy(destDir = x)).text("Destination directory"),
+        opt[String]('l', "delimiter").action((x, c) => c.copy(delimiter = x)).text("Delimiter"),
+        opt[String]('k', "dedupKey").action((x, c) => c.copy(dedupKey = x)).text("Deduplication key"),
+        opt[String]('p', "partitionCol").action((x, c) => c.copy(partitionCol = x)).text("Partition column")
       )
     }
 
@@ -90,89 +80,91 @@ object CsvToAvroApp {
           .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
           .getOrCreate()
 
-        // Override conf with CLI args if provided
         val inputDir = s"/app/${cliConfig.sourceDir}"
         val outputDir = s"/app/${cliConfig.destDir}"
         val delimiter = cliConfig.delimiter
         val dedupKey = cliConfig.dedupKey
         val partitionCol = cliConfig.partitionCol
 
-        // --- CORRUPTED ROW HANDLING USING SPARK CSV ONLY ---
-        val df_raw = spark.read
+        // --- READ CSV: NO SCHEMA, ALL STRING, NO HEADER ---
+        val df_raw_strings = spark.read
           .format("csv")
           .option("header", "false")
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
-          .option("enforceSchema", "false")
-          .schema(schema)
+          .option("inferSchema", "false")  // ← ADDED
           .load(inputDir)
 
-        val hasCorrupt = df_raw.columns.contains("_corrupt_record")
+        // Rename _c0, _c1, ... → id, name, ...
+        val df_named = df_raw_strings.toDF(orderedCols: _*)
 
-        val (df_clean, corrupted) =
-          if (hasCorrupt) {
-            val corrupted = df_raw.filter(col("_corrupt_record").isNotNull)
-            val clean = df_raw.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
-            (clean, corrupted)
-          } else {
-            (df_raw, spark.emptyDataFrame)
-          }
-
-        if (!corrupted.isEmpty) {
-          val corruptPath = s"$outputDir/../corrupted/${System.currentTimeMillis()}"
-          logger.warn(s"Saving corrupted rows to: $corruptPath")
-          corrupted.write.mode("overwrite").json(corruptPath)
+        // --- STRUCTURAL CORRUPTIONS ---
+        val hasCorrupt = df_named.columns.contains("_corrupt_record")
+        val (df_clean_strings, df_structural_bad) = if (hasCorrupt) {
+          val bad  = df_named.filter(col("_corrupt_record").isNotNull)
+          val good = df_named.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
+          (good, bad)
+        } else {
+          (df_named, spark.emptyDataFrame)
         }
 
-        val readCount = df_clean.count()
-        logger.info(s"Records read (clean): $readCount")
+        // Save structural bad rows
+        if (!df_structural_bad.isEmpty) {
+          val path = s"$outputDir/../corrupted/structural_${System.currentTimeMillis()}"
+          logger.warn(s"Saving ${df_structural_bad.count()} structural corrupt rows → $path")
+          df_structural_bad.write.mode("overwrite").json(path)
+        }
 
-        val malformedCount = Try(spark.read.format("csv").option("header", "true").option("delimiter", delimiter).option("mode", "PERMISSIVE").option("columnNameOfCorruptRecord", "_corrupt_record").schema(schema).load(inputDir).count() - readCount).getOrElse(0L)
-        if (malformedCount > 0) logger.warn(s"Malformed records dropped: $malformedCount")
+        // --- CASTING + CAPTURE TYPE ERRORS ---
+        val (df_typed, castErrorCount, df_cast_bad) = safeCastColumns(
+          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt)
 
-        val cleaned = process(df_clean, conf.getConfig("schemaMapping"), dedupKey, partitionCol, globalDateFmt, globalTsFmt)
-        cleaned.write
+        // Save casting errors
+        if (!df_cast_bad.isEmpty) {
+          val path = s"$outputDir/../corrupted/cast_errors_${System.currentTimeMillis()}"
+          logger.warn(s"Saving $castErrorCount casting errors → $path")
+          df_cast_bad.write.mode("overwrite").json(path)
+        }
+
+        // --- VALIDATION, DEDUP, WRITE ---
+        val validated = df_typed.filter(col(dedupKey).isNotNull)
+        val nullKeyCnt = df_typed.count() - validated.count()
+        if (nullKeyCnt > 0) logger.warn(s"Filtered $nullKeyCnt rows with null $dedupKey")
+
+        val withTs = validated.withColumn(partitionCol, current_timestamp())
+        val finalDf = withTs.dropDuplicates(dedupKey :: Nil)
+
+        finalDf.write
           .format("avro")
           .mode("overwrite")
           .partitionBy(partitionCol)
           .save(outputDir)
 
-        val writtenCount = spark.read.format("avro").load(outputDir).count()
-        logger.info(s"Records written: $writtenCount")
+        val written = spark.read.format("avro").load(outputDir).count()
+        logger.info(s"Records written (clean): $written")
+        logger.info(s"Process completed. Output written to $outputDir")
 
-        logger.info(s"✅ Process completed. Output written to $outputDir")
-        
-        // Stop Spark only if not running inside tests
-        if (!sys.props.contains("spark.test.active")) {
-          spark.stop()
-        }
-        // spark.stop()
+        if (!sys.props.contains("spark.test.active")) spark.stop()
+
       case None =>
-        // Invalid args, print usage
         OParser.usage(parser)
         sys.exit(1)
     }
   }
 
-  def process(df: DataFrame, schemaConfig: Config, dedupKey: String, partitionCol: String, globalDateFmt: String, globalTsFmt: String): DataFrame = {
-    val (casted, errorCount) = safeCastColumns(df, schemaConfig, globalDateFmt, globalTsFmt)
-    if (errorCount > 0) logger.warn(s"Total casting errors: $errorCount")
+  // --- UPDATED: returns bad rows too ---
+  def safeCastColumns(
+      df: DataFrame,
+      config: Config,
+      globalDateFmt: String,
+      globalTsFmt: String
+  ): (DataFrame, Long, DataFrame) = {
 
-    // Basic validation: e.g., null checks on dedupKey
-    val validated = casted.filter(col(dedupKey).isNotNull)
-    val invalidCount = casted.count() - validated.count()
-    if (invalidCount > 0) logger.warn(s"Invalid records filtered (null in $dedupKey): $invalidCount")
-
-    val withTimestamp = validated.withColumn(partitionCol, current_timestamp())
-    val deduped = withTimestamp.dropDuplicates(dedupKey :: Nil)
-    deduped
-  }
-
-  def safeCastColumns(df: DataFrame, config: Config, globalDateFmt: String, globalTsFmt: String): (DataFrame, Long) = {
-    var errorCount = 0L
-    var result = df
     import df.sparkSession.implicits._
+    var result = df
+    var errorCount = 0L
+    val badRows = scala.collection.mutable.ArrayBuffer[Row]()
 
     config.entrySet().forEach { entry =>
       val colName = entry.getKey
@@ -186,8 +178,7 @@ object CsvToAvroApp {
           case _ => ""
         }
 
-        // Cache original column for error detection
-        val origCol = colName + "_orig"
+        val origCol = s"${colName}_orig"
         result = result.withColumn(origCol, col(colName))
 
         val castType = castExpr match {
@@ -202,10 +193,9 @@ object CsvToAvroApp {
           case "DecimalType" =>
             val Array(prec, scale) = fmt.split(",").map(_.trim.toInt)
             DecimalType(prec, scale)
-          case _ => StringType  // Fallback
+          case _ => StringType
         }
 
-        // Safe cast: set to null on failure - skip initial cast for Date/Timestamp with custom formats
         if (castExpr == "DateType" && fmt.nonEmpty) {
           result = result.withColumn(colName, to_date(col(colName), fmt))
         } else if (castExpr == "TimestampType" && fmt.nonEmpty) {
@@ -214,23 +204,25 @@ object CsvToAvroApp {
           result = result.withColumn(colName, col(colName).cast(castType))
         }
 
-        // Detect failures: where cast is null but orig was not
         val failures = result.filter(col(colName).isNull && col(origCol).isNotNull)
         val failCount = failures.count()
         errorCount += failCount
         if (failCount > 0) {
           logger.warn(s"Casting failures for $colName ($castExpr): $failCount")
-          // Log sample rows (up to 5)
-          failures.take(5).foreach { row: Row =>
+          failures.take(5).foreach { row =>
             logger.warn(s"Failed row: ${row.mkString(", ")}")
           }
+          failures.take(100).foreach(badRows += _)  // collect for saving
         }
-
         result = result.drop(origCol)
-      } else {
-        logger.warn(s"Column $colName not found in DataFrame, skipping casting")
       }
     }
-    (result, errorCount)
+
+    val badDf = if (badRows.nonEmpty)
+      spark.createDataFrame(badRows.toSeq, result.schema)
+    else
+      spark.emptyDataFrame
+
+    (result, errorCount, badDf)
   }
 }

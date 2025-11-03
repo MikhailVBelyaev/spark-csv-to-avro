@@ -8,15 +8,17 @@ import org.apache.spark.sql.functions._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
+import scala.jdk.CollectionConverters._
 
 /**
-  * Unit + integration tests for CsvToAvroApp.
+  * Unit + integration tests for the **new** CsvToAvroApp.
   *
-  * What changed compared to the previous version:
-  *   • Spark session timezone = "UTC+5" (same as production)
-  *   • import org.apache.spark.sql.functions._
-  *   • Every test DataFrame is forced to StringType before casting
-  *   • No inferSchema → safeCastColumns always sees raw strings
+  * What changed compared to the old version:
+  *   • CSV is read **without header** and **all columns as String**
+  *   • Column order comes from `app.columns` in config
+  *   • Corrupt rows (structural / missing cols / cast errors) are written to
+  *     `…/corrupted/…` as JSON
+  *   • `safeCastColumns` now returns `(cleanDF, errorCount, badDF)`
   */
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -24,20 +26,20 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
-    .appName("TestApp")
-    .config("spark.sql.session.timeZone", "UTC+5")          // <-- SAME AS MAIN APP
+    .appName("CsvToAvroAppTest")
+    .config("spark.sql.session.timeZone", "UTC+5")
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
     .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()
 
   import spark.implicits._
-  import org.apache.spark.sql.functions._                 // <-- REQUIRED
+  import org.apache.spark.sql.functions._
 
   override def afterAll(): Unit = spark.stop()
 
   /** Helper – creates a temporary directory and deletes it afterwards */
   def withTempDir(testCode: String => Unit): Unit = {
-    val tmp = Files.createTempDirectory("spark_test").toString
+    val tmp = Files.createTempDirectory("csv_avro_test").toString
     try testCode(tmp)
     finally {
       Files.walk(Paths.get(tmp))
@@ -47,222 +49,320 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
-  // 1. All supported types
+  // 1. All supported types (including custom patterns)
   // -------------------------------------------------------------------------
   test("type casting – all supported types") {
-    val raw = Seq((
-      "1", "Alice", "99.99", "25", "1.65", "true",
-      "2023-01-01", "2023-01-01 10:30:00", "123.45"
-    )).toDF("id","name","price","age","height","is_active",
-            "created_date","updated_at","balance")
+    withTempDir { base =>
+      val inputDir  = s"$base/input"
+      val outputDir = s"$base/output"
+      Files.createDirectories(Paths.get(inputDir))
 
-    // <-- FORCE STRING
-    val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
+      // ordered columns exactly as in config
+      val ordered = Seq(
+        "id","name","price","age","height","is_active",
+        "created_date","updated_at","balance"
+      )
 
-    val confStr =
-      """app { schemaMapping {
-        |  id          = "IntegerType"
-        |  name        = "StringType"
-        |  price       = "DoubleType"
-        |  age         = "LongType"
-        |  height      = "FloatType"
-        |  is_active   = "BooleanType"
-        |  created_date= "DateType:yyyy-MM-dd"
-        |  updated_at  = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  balance     = "DecimalType:10,2"
-        |}}""".stripMargin
+      // CSV **without header**, all values are strings
+      val csvLines = Seq(
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45"""
+      )
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
+      // -----------------------------------------------------------------
+      // config that the app will load from classpath (src/test/resources)
+      // -----------------------------------------------------------------
+      val testConf =
+        s"""
+           |app {
+           |  dateFormat      = "yyyy-MM-dd"
+           |  timestampFormat = "yyyy-MM-dd HH:mm:ss"
+           |  columns         = [${ordered.map(c => s""""$c"""").mkString(",")}]
+           |  schemaMapping {
+           |    id           = "IntegerType"
+           |    name         = "StringType"
+           |    price        = "DoubleType"
+           |    age          = "LongType"
+           |    height       = "FloatType"
+           |    is_active    = "BooleanType"
+           |    created_date = "DateType:yyyy-MM-dd"
+           |    updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
+           |    balance      = "DecimalType:10,2"
+           |  }
+           |}
+           |""".stripMargin
 
-    // schema
-    assert(casted.schema("id").dataType          === IntegerType)
-    assert(casted.schema("name").dataType        === StringType)
-    assert(casted.schema("price").dataType       === DoubleType)
-    assert(casted.schema("age").dataType         === LongType)
-    assert(casted.schema("height").dataType      === FloatType)
-    assert(casted.schema("is_active").dataType   === BooleanType)
-    assert(casted.schema("created_date").dataType=== DateType)
-    assert(casted.schema("updated_at").dataType  === TimestampType)
-    assert(casted.schema("balance").dataType     === DecimalType(10,2))
+      // write the config to a temporary file that will be loaded via ConfigFactory.load()
+      val confPath = s"$base/application.conf"
+      Files.write(Paths.get(confPath), testConf.getBytes)
 
-    // data
-    val r = casted.first()
-    assert(r.getAs[Int]("id")            === 1)
-    assert(r.getAs[String]("name")       === "Alice")
-    assert(r.getAs[Double]("price")      === 99.99)
-    assert(r.getAs[Long]("age")          === 25L)
-    assert(r.getAs[Float]("height")      === 1.65f)
-    assert(r.getAs[Boolean]("is_active"))
-    assert(r.getAs[Date]("created_date") === Date.valueOf("2023-01-01"))
-    assert(r.getAs[Timestamp]("updated_at") === Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(r.getAs[java.math.BigDecimal]("balance") === new java.math.BigDecimal("123.45"))
-    assert(errCnt === 0)
+      // Run the **real** main method with CLI args
+      CsvToAvroApp.main(Array(
+        "--sourceDir", inputDir,
+        "--destDir",   outputDir,
+        "--delimiter", ",",
+        "--dedupKey",  "id",
+        "--partitionCol", "processing_timestamp"
+      ))
+
+      // -----------------------------------------------------------------
+      // Verify Avro output
+      // -----------------------------------------------------------------
+      val avro = spark.read.format("avro").load(outputDir)
+      assert(avro.count() === 1)
+
+      val r = avro.first()
+      assert(r.getAs[Int]("id")            === 1)
+      assert(r.getAs[String]("name")       === "Alice")
+      assert(r.getAs[Double]("price")      === 99.99)
+      assert(r.getAs[Long]("age")          === 25L)
+      assert(r.getAs[Float]("height")      === 1.65f)
+      assert(r.getAs[Boolean]("is_active"))
+      assert(r.getAs[Date]("created_date") === Date.valueOf("2023-01-01"))
+      assert(r.getAs[Timestamp]("updated_at") === Timestamp.valueOf("2023-01-01 10:30:00"))
+      assert(r.getAs[java.math.BigDecimal]("balance") === new java.math.BigDecimal("123.45"))
+    }
   }
 
   // -------------------------------------------------------------------------
   // 2. Date / timestamp with custom patterns
   // -------------------------------------------------------------------------
   test("date & timestamp – different format patterns") {
-    val raw = Seq((
-      "2023-01-01", "01/02/2023", "2023-01-01 10:30:00", "01-02-2023 12:00:00"
-    )).toDF("created_date","alt_date","updated_at","alt_timestamp")
+    withTempDir { base =>
+      val inputDir  = s"$base/input"
+      val outputDir = s"$base/output"
+      Files.createDirectories(Paths.get(inputDir))
 
-    val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
+      val ordered = Seq("created_date","alt_date","updated_at","alt_timestamp")
+      val csvLines = Seq(
+        """2023-01-01,01/02/2023,2023-01-01 10:30:00,01-02-2023 12:00:00"""
+      )
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
-    val confStr =
-      """app { schemaMapping {
-        |  created_date = "DateType:yyyy-MM-dd"
-        |  alt_date     = "DateType:dd/MM/yyyy"
-        |  updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  alt_timestamp= "TimestampType:dd-MM-yyyy HH:mm:ss"
-        |}}""".stripMargin
+      val testConf =
+        s"""
+           |app {
+           |  dateFormat      = "yyyy-MM-dd"
+           |  timestampFormat = "yyyy-MM-dd HH:mm:ss"
+           |  columns         = [${ordered.map(c => s""""$c"""").mkString(",")}]
+           |  schemaMapping {
+           |    created_date = "DateType:yyyy-MM-dd"
+           |    alt_date     = "DateType:dd/MM/yyyy"
+           |    updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
+           |    alt_timestamp= "TimestampType:dd-MM-yyyy HH:mm:ss"
+           |  }
+           |}
+           |""".stripMargin
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
+      val confPath = s"$base/application.conf"
+      Files.write(Paths.get(confPath), testConf.getBytes)
 
-    val r = casted.first()
-    assert(r.getAs[Date]("created_date")   === Date.valueOf("2023-01-01"))
-    assert(r.getAs[Date]("alt_date")       === Date.valueOf("2023-02-01"))
-    assert(r.getAs[Timestamp]("updated_at")=== Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(r.getAs[Timestamp]("alt_timestamp") === Timestamp.valueOf("2023-02-01 12:00:00"))
-    assert(errCnt === 0)
+      CsvToAvroApp.main(Array(
+        "--sourceDir", inputDir,
+        "--destDir",   outputDir,
+        "--delimiter", ","
+      ))
+
+      val avro = spark.read.format("avro").load(outputDir)
+      val r = avro.first()
+      assert(r.getAs[Date]("created_date")   === Date.valueOf("2023-01-01"))
+      assert(r.getAs[Date]("alt_date")       === Date.valueOf("2023-02-01"))
+      assert(r.getAs[Timestamp]("updated_at")=== Timestamp.valueOf("2023-01-01 10:30:00"))
+      assert(r.getAs[Timestamp]("alt_timestamp") === Timestamp.valueOf("2023-02-01 12:00:00"))
+    }
   }
 
   // -------------------------------------------------------------------------
-  // OPTIONAL: 2.1. Keep debug test to verify timezone — can be removed later
+  // 3. Invalid data → null + corrupted JSON files
   // -------------------------------------------------------------------------
-  test("Timezone debug") {
-    val ts = Timestamp.valueOf("2023-01-01 10:30:00")
-    println(s"Java Timestamp: $ts")
-    println(s"Epoch: ${ts.getTime}")
+  test("invalid data → null + corrupted JSON files") {
+    withTempDir { base =>
+      val inputDir  = s"$base/input"
+      val outputDir = s"$base/output"
+      Files.createDirectories(Paths.get(inputDir))
 
-    val df = Seq(("2023-01-01 10:30:00")).toDF("ts").withColumn("ts", col("ts").cast(StringType))
-    val parsed = df.withColumn("p", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
-    parsed.show()
+      val ordered = Seq(
+        "id","name","price","age","height","is_active",
+        "created_date","updated_at","balance"
+      )
+      val csvLines = Seq(
+        """invalid,Alice,invalid,invalid,invalid,invalid,invalid,invalid,invalid"""
+      )
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
-    val row = parsed.first()
-    val sparkTs = row.getTimestamp(1)
-    println(s"Spark Timestamp: $sparkTs")
-    println(s"Epoch: ${sparkTs.getTime}")
-  }
+      val testConf =
+        s"""
+           |app {
+           |  dateFormat      = "yyyy-MM-dd"
+           |  timestampFormat = "yyyy-MM-dd HH:mm:ss"
+           |  columns         = [${ordered.map(c => s""""$c"""").mkString(",")}]
+           |  schemaMapping {
+           |    id           = "IntegerType"
+           |    name         = "StringType"
+           |    price        = "DoubleType"
+           |    age          = "LongType"
+           |    height       = "FloatType"
+           |    is_active    = "BooleanType"
+           |    created_date = "DateType:yyyy-MM-dd"
+           |    updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
+           |    balance      = "DecimalType:10,2"
+           |  }
+           |}
+           |""".stripMargin
 
-  // -------------------------------------------------------------------------
-  // 3. Invalid data → null + error count
-  // -------------------------------------------------------------------------
-  test("invalid data → null + error count") {
-    val raw = Seq((
-      "invalid","Alice","invalid","invalid","invalid","invalid",
-      "invalid","invalid","invalid"
-    )).toDF("id","name","price","age","height","is_active",
-            "created_date","updated_at","balance")
+      val confPath = s"$base/application.conf"
+      Files.write(Paths.get(confPath), testConf.getBytes)
 
-    val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
+      CsvToAvroApp.main(Array(
+        "--sourceDir", inputDir,
+        "--destDir",   outputDir,
+        "--delimiter", ",",
+        "--dedupKey",  "id"
+      ))
 
-    val confStr =
-      """app { schemaMapping {
-        |  id          = "IntegerType"
-        |  name        = "StringType"
-        |  price       = "DoubleType"
-        |  age         = "LongType"
-        |  height      = "FloatType"
-        |  is_active   = "BooleanType"
-        |  created_date= "DateType:yyyy-MM-dd"
-        |  updated_at  = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  balance     = "DecimalType:10,2"
-        |}}""".stripMargin
+      // clean Avro should be empty (all rows failed casting)
+      val avro = spark.read.format("avro").load(outputDir)
+      assert(avro.isEmpty)
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
+      // corrupted JSON must contain the original row (8 cast errors)
+      val corruptDir = Paths.get(s"$base/corrupted")
+      val castErrorFiles = Files.list(corruptDir)
+        .filter(p => p.toString.contains("cast_errors"))
+        .findFirst()
+        .orElse(fail("No cast_errors file found"))
 
-    val r = casted.first()
-    assert(r.isNullAt(r.fieldIndex("id")))
-    assert(r.getAs[String]("name") === "Alice")
-    assert(r.isNullAt(r.fieldIndex("price")))
-    assert(r.isNullAt(r.fieldIndex("age")))
-    assert(r.isNullAt(r.fieldIndex("height")))
-    assert(r.isNullAt(r.fieldIndex("is_active")))
-    assert(r.isNullAt(r.fieldIndex("created_date")))
-    assert(r.isNullAt(r.fieldIndex("updated_at")))
-    assert(r.isNullAt(r.fieldIndex("balance")))
-    assert(errCnt === 8)   // 8 columns failed
+      val bad = spark.read.json(castErrorFiles.toString)
+      assert(bad.count() === 1)
+      val row = bad.first()
+      assert(row.getAs[String]("name") === "Alice")
+      // all other fields are null
+      assert(row.isNullAt(row.fieldIndex("id")))
+      assert(row.isNullAt(row.fieldIndex("price")))
+      // … etc.
+    }
   }
 
   // -------------------------------------------------------------------------
   // 4. Deduplication + partition column
   // -------------------------------------------------------------------------
   test("deduplication & partition column") {
-    val schema = StructType(Seq(
-      StructField("id",   IntegerType, nullable = true),
-      StructField("name", StringType,  nullable = true)
-    ))
-    val rows = Seq(
-      Row(1, "Alice"),
-      Row(1, "Bob"),
-      Row(null, "Charlie")
-    )
-    val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+    withTempDir { base =>
+      val inputDir  = s"$base/input"
+      val outputDir = s"$base/output"
+      Files.createDirectories(Paths.get(inputDir))
 
-    val confStr =
-      """app { schemaMapping {
-        |  id   = "IntegerType"
-        |  name = "StringType"
-        |}}""".stripMargin
+      val ordered = Seq("id","name")
+      val csvLines = Seq(
+        """1,Alice""",
+        """1,Bob""",
+        """,Charlie"""   // missing id → will be filtered
+      )
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val processed = CsvToAvroApp.process(df, conf, "id",
-                                         "processing_timestamp",
-                                         "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
+      val testConf =
+        s"""
+           |app {
+           |  columns = ["id","name"]
+           |  schemaMapping {
+           |    id   = "IntegerType"
+           |    name = "StringType"
+           |  }
+           |}
+           |""".stripMargin
 
-    assert(processed.count() === 1)
-    assert(processed.filter($"id" === 1).count() === 1)
-    assert(processed.schema("processing_timestamp").dataType === TimestampType)
-  }
-
-  // -------------------------------------------------------------------------
-  // 5. Integration – full pipeline (CSV → Avro)
-  // -------------------------------------------------------------------------
-  test("integration – full pipeline") {
-    withTempDir { _ =>
-      val in  = s"test-input-${java.util.UUID.randomUUID().toString.take(8)}"
-      val out = s"test-output-${java.util.UUID.randomUUID().toString.take(8)}"
-      val inPath  = s"/app/$in"
-      val outPath = s"/app/$out"
-
-      // clean any leftovers
-      try Files.walk(Paths.get(inPath)).sorted(java.util.Comparator.reverseOrder())
-           .forEach(Files.deleteIfExists(_))
-      catch { case _: Throwable => }
-      try Files.walk(Paths.get(outPath)).sorted(java.util.Comparator.reverseOrder())
-           .forEach(Files.deleteIfExists(_))
-      catch { case _: Throwable => }
-
-      Files.createDirectories(Paths.get(inPath))
-
-      val csv = Seq(
-        ("1","Alice","99.99","25","1.65","true","2023-01-01","2023-01-01 10:30:00","123.45"),
-        ("2","Bob","invalid","30","1.75","false","2023-01-02","2023-01-02 12:00:00","456.78")
-      ).toDF("id","name","price","age","height","is_active",
-             "created_date","updated_at","balance")
-
-      csv.write.mode("overwrite")
-        .option("header","true").option("delimiter",",")
-        .csv(inPath)
+      val confPath = s"$base/application.conf"
+      Files.write(Paths.get(confPath), testConf.getBytes)
 
       CsvToAvroApp.main(Array(
-        "--sourceDir", in,
-        "--destDir",   out,
+        "--sourceDir", inputDir,
+        "--destDir",   outputDir,
         "--delimiter", ",",
         "--dedupKey",  "id",
         "--partitionCol", "processing_timestamp"
       ))
 
-      val avro = spark.read.format("avro").load(outPath)
+      val avro = spark.read.format("avro").load(outputDir)
+      assert(avro.count() === 1)                 // deduped
+      assert(avro.filter($"id" === 1).count() === 1)
+      assert(avro.schema.exists(_.name == "processing_timestamp"))
+      assert(avro.schema("processing_timestamp").dataType === TimestampType)
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Integration – full pipeline (CSV → Avro + corrupted JSON)
+  // -------------------------------------------------------------------------
+  test("integration – full pipeline") {
+    withTempDir { base =>
+      val inputDir  = s"$base/input"
+      val outputDir = s"$base/output"
+      Files.createDirectories(Paths.get(inputDir))
+
+      val ordered = Seq(
+        "id","name","price","age","height","is_active",
+        "created_date","updated_at","balance"
+      )
+      val csvLines = Seq(
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45""",
+        """2,Bob,invalid,30,1.75,false,2023-01-02,2023-01-02 12:00:00,456.78"""
+      )
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
+
+      val testConf =
+        s"""
+           |app {
+           |  dateFormat      = "yyyy-MM-dd"
+           |  timestampFormat = "yyyy-MM-dd HH:mm:ss"
+           |  columns         = [${ordered.map(c => s""""$c"""").mkString(",")}]
+           |  schemaMapping {
+           |    id           = "IntegerType"
+           |    name         = "StringType"
+           |    price        = "DoubleType"
+           |    age          = "LongType"
+           |    height       = "FloatType"
+           |    is_active    = "BooleanType"
+           |    created_date = "DateType:yyyy-MM-dd"
+           |    updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
+           |    balance      = "DecimalType:10,2"
+           |  }
+           |}
+           |""".stripMargin
+
+      val confPath = s"$base/application.conf"
+      Files.write(Paths.get(confPath), testConf.getBytes)
+
+      CsvToAvroApp.main(Array(
+        "--sourceDir", inputDir,
+        "--destDir",   outputDir,
+        "--delimiter", ",",
+        "--dedupKey",  "id",
+        "--partitionCol", "processing_timestamp"
+      ))
+
+      // ----- clean Avro -----
+      val avro = spark.read.format("avro").load(outputDir)
       assert(avro.count() === 2)
-      assert(avro.filter($"price".isNull).count() === 1)
+
+      val good = avro.filter($"price".isNotNull)
+      assert(good.count() === 1)
+      assert(good.filter($"name" === "Alice").count() === 1)
+
+      val badPrice = avro.filter($"price".isNull)
+      assert(badPrice.count() === 1)
+      assert(badPrice.filter($"name" === "Bob").count() === 1)
+
+      // ----- corrupted JSON (cast errors) -----
+      val corruptDir = Paths.get(s"$base/corrupted")
+      val castErrorFile = Files.list(corruptDir)
+        .filter(p => p.toString.contains("cast_errors"))
+        .findFirst()
+        .get
+
+      val badDf = spark.read.json(castErrorFile.toString)
+      assert(badDf.count() === 1)
+      val badRow = badDf.first()
+      assert(badRow.getAs[String]("name") === "Bob")
+      assert(badRow.isNullAt(badRow.fieldIndex("price")))
     }
   }
 }

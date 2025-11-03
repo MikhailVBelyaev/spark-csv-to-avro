@@ -5,21 +5,10 @@ import org.scalatest.BeforeAndAfterAll
 import org.apache.spark.sql.{SparkSession, Row}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions._
-import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
 import scala.collection.JavaConverters._
 
-/**
-  * Unit + integration tests for the **new** CsvToAvroApp.
-  *
-  * What changed compared to the old version:
-  *   • CSV is read **without header** and **all columns as String**
-  *   • Column order comes from `app.columns` in config
-  *   • Corrupt rows (structural / missing cols / cast errors) are written to
-  *     `…/corrupted/…` as JSON
-  *   • `safeCastColumns` now returns `(cleanDF, errorCount, badDF)`
-  */
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
   System.setProperty("spark.test.active", "true")
@@ -35,7 +24,6 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   import spark.implicits._
   import org.apache.spark.sql.functions._
 
-  // Ensure /app/tmp exists
   override def beforeAll(): Unit = {
     super.beforeAll()
     Files.createDirectories(Paths.get("/app/tmp"))
@@ -43,7 +31,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
   override def afterAll(): Unit = spark.stop()
 
-  /** Helper – creates a temporary directory **inside /app/tmp** */
+  /** Helper – creates a temporary directory inside /app/tmp */
   def withTempDir(testCode: String => Unit): Unit = {
     val appTmp = "/app/tmp"
     Files.createDirectories(Paths.get(appTmp))
@@ -59,7 +47,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
-  // 1. All supported types (including custom patterns)
+  // 1. All supported types
   // -------------------------------------------------------------------------
   test("type casting – all supported types") {
     withTempDir { base =>
@@ -67,21 +55,16 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val outputDir = s"$base/output"
       Files.createDirectories(Paths.get(inputDir))
 
-      // ordered columns exactly as in config
       val ordered = Seq(
         "id","name","price","age","height","is_active",
         "created_date","updated_at","balance"
       )
 
-      // CSV **without header**, all values are strings
       val csvLines = Seq(
         """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45"""
       )
       Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
-      // -----------------------------------------------------------------
-      // config that the app will load from classpath (src/test/resources)
-      // -----------------------------------------------------------------
       val testConf =
         s"""
            |app {
@@ -102,22 +85,21 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
            |}
            |""".stripMargin
 
-      // write the config to a temporary file that will be loaded via ConfigFactory.load()
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      // Run the **real** main method with CLI args
+      // RELATIVE PATHS ONLY
+      val sourceRel = Paths.get(inputDir).getFileName.toString
+      val destRel   = Paths.get(outputDir).getFileName.toString
+
       CsvToAvroApp.main(Array(
-        "--sourceDir", inputDir,
-        "--destDir",   outputDir,
+        "--sourceDir", sourceRel,
+        "--destDir",   destRel,
         "--delimiter", ",",
         "--dedupKey",  "id",
         "--partitionCol", "processing_timestamp"
       ))
 
-      // -----------------------------------------------------------------
-      // Verify Avro output
-      // -----------------------------------------------------------------
       val avro = spark.read.format("avro").load(outputDir)
       assert(avro.count() === 1)
 
@@ -167,9 +149,12 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
+      val sourceRel = Paths.get(inputDir).getFileName.toString
+      val destRel   = Paths.get(outputDir).getFileName.toString
+
       CsvToAvroApp.main(Array(
-        "--sourceDir", inputDir,
-        "--destDir",   outputDir,
+        "--sourceDir", sourceRel,
+        "--destDir",   destRel,
         "--delimiter", ","
       ))
 
@@ -183,7 +168,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
-  // 3. Invalid data → null + corrupted JSON files
+  // 3. Invalid data → corrupted JSON
   // -------------------------------------------------------------------------
   test("invalid data → null + corrupted JSON files") {
     withTempDir { base =>
@@ -223,32 +208,31 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
+      val sourceRel = Paths.get(inputDir).getFileName.toString
+      val destRel   = Paths.get(outputDir).getFileName.toString
+
       CsvToAvroApp.main(Array(
-        "--sourceDir", inputDir,
-        "--destDir",   outputDir,
+        "--sourceDir", sourceRel,
+        "--destDir",   destRel,
         "--delimiter", ",",
         "--dedupKey",  "id"
       ))
 
-      // clean Avro should be empty (all rows failed casting)
       val avro = spark.read.format("avro").load(outputDir)
       assert(avro.isEmpty)
 
-      // corrupted JSON must contain the original row (8 cast errors)
       val corruptDir = Paths.get(s"$base/corrupted")
-      val castErrorFiles = Files.list(corruptDir)
+      val castErrorFile = Files.list(corruptDir)
         .filter(p => p.toString.contains("cast_errors"))
         .findFirst()
-        .orElse(fail("No cast_errors file found"))
+        .getOrElse(fail("No cast_errors file found"))
 
-      val bad = spark.read.json(castErrorFiles.toString)
+      val bad = spark.read.json(castErrorFile.toString)
       assert(bad.count() === 1)
       val row = bad.first()
       assert(row.getAs[String]("name") === "Alice")
-      // all other fields are null
       assert(row.isNullAt(row.fieldIndex("id")))
       assert(row.isNullAt(row.fieldIndex("price")))
-      // … etc.
     }
   }
 
@@ -265,7 +249,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val csvLines = Seq(
         """1,Alice""",
         """1,Bob""",
-        """,Charlie"""   // missing id → will be filtered
+        """,Charlie"""
       )
       Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvLines.asJava)
 
@@ -283,16 +267,19 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
+      val sourceRel = Paths.get(inputDir).getFileName.toString
+      val destRel   = Paths.get(outputDir).getFileName.toString
+
       CsvToAvroApp.main(Array(
-        "--sourceDir", inputDir,
-        "--destDir",   outputDir,
+        "--sourceDir", sourceRel,
+        "--destDir",   destRel,
         "--delimiter", ",",
         "--dedupKey",  "id",
         "--partitionCol", "processing_timestamp"
       ))
 
       val avro = spark.read.format("avro").load(outputDir)
-      assert(avro.count() === 1)                 // deduped
+      assert(avro.count() === 1)
       assert(avro.filter($"id" === 1).count() === 1)
       assert(avro.schema.exists(_.name == "processing_timestamp"))
       assert(avro.schema("processing_timestamp").dataType === TimestampType)
@@ -300,7 +287,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
-  // 5. Integration – full pipeline (CSV → Avro + corrupted JSON)
+  // 5. Integration – full pipeline
   // -------------------------------------------------------------------------
   test("integration – full pipeline") {
     withTempDir { base =>
@@ -341,15 +328,17 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
+      val sourceRel = Paths.get(inputDir).getFileName.toString
+      val destRel   = Paths.get(outputDir).getFileName.toString
+
       CsvToAvroApp.main(Array(
-        "--sourceDir", inputDir,
-        "--destDir",   outputDir,
+        "--sourceDir", sourceRel,
+        "--destDir",   destRel,
         "--delimiter", ",",
         "--dedupKey",  "id",
         "--partitionCol", "processing_timestamp"
       ))
 
-      // ----- clean Avro -----
       val avro = spark.read.format("avro").load(outputDir)
       assert(avro.count() === 2)
 
@@ -361,7 +350,6 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       assert(badPrice.count() === 1)
       assert(badPrice.filter($"name" === "Bob").count() === 1)
 
-      // ----- corrupted JSON (cast errors) -----
       val corruptDir = Paths.get(s"$base/corrupted")
       val castErrorFile = Files.list(corruptDir)
         .filter(p => p.toString.contains("cast_errors"))

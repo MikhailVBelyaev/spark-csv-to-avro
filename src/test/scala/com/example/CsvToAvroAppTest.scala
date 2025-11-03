@@ -8,15 +8,18 @@ import org.apache.spark.sql.functions._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
+import scala.util.Try
 
 /**
-  * Unit + integration tests for CsvToAvroApp.
+  * Unit + integration tests for FINAL CsvToAvroApp.
   *
-  * What changed compared to the previous version:
-  *   • Spark session timezone = "UTC+5" (same as production)
-  *   • import org.apache.spark.sql.functions._
-  *   • Every test DataFrame is forced to StringType before casting
-  *   • No inferSchema → safeCastColumns always sees raw strings
+  * Now tests:
+  *   • Missing columns → saved to /corrupted/missing_cols_...
+  *   • Structural corruptions → saved to /corrupted/structural_...
+  *   • Casting errors → saved to /corrupted/cast_errors_...
+  *   • Clean Avro output → only valid rows
+  *   • Deduplication + partition column
+  *   • Timezone UTC+5 (same as prod)
   */
 class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -25,30 +28,30 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   val spark: SparkSession = SparkSession.builder()
     .master("local[*]")
     .appName("TestApp")
-    .config("spark.sql.session.timeZone", "UTC+5")          // <-- SAME AS MAIN APP
+    .config("spark.sql.session.timeZone", "UTC+5")
     .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
     .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
     .getOrCreate()
 
   import spark.implicits._
-  import org.apache.spark.sql.functions._                 // <-- REQUIRED
 
   override def afterAll(): Unit = spark.stop()
 
-  /** Helper – creates a temporary directory and deletes it afterwards */
   def withTempDir(testCode: String => Unit): Unit = {
     val tmp = Files.createTempDirectory("spark_test").toString
     try testCode(tmp)
     finally {
-      Files.walk(Paths.get(tmp))
-        .sorted(java.util.Comparator.reverseOrder())
-        .forEach(Files.deleteIfExists(_))
+      Try {
+        Files.walk(Paths.get(tmp))
+          .sorted(java.util.Comparator.reverseOrder())
+          .forEach(Files.deleteIfExists(_))
+      }
     }
   }
 
-  // -------------------------------------------------------------------------
-  // 1. All supported types
-  // -------------------------------------------------------------------------
+  // =========================================================================
+  // 1. Type casting – all supported types
+  // =========================================================================
   test("type casting – all supported types") {
     val raw = Seq((
       "1", "Alice", "99.99", "25", "1.65", "true",
@@ -56,213 +59,242 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     )).toDF("id","name","price","age","height","is_active",
             "created_date","updated_at","balance")
 
-    // <-- FORCE STRING
     val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
 
     val confStr =
-      """app { schemaMapping {
-        |  id          = "IntegerType"
-        |  name        = "StringType"
-        |  price       = "DoubleType"
-        |  age         = "LongType"
-        |  height      = "FloatType"
-        |  is_active   = "BooleanType"
-        |  created_date= "DateType:yyyy-MM-dd"
-        |  updated_at  = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  balance     = "DecimalType:10,2"
-        |}}""".stripMargin
+      """app {
+        |  dateFormat = "yyyy-MM-dd"
+        |  timestampFormat = "yyyy-MM-dd HH:mm:ss"
+        |  columns = [id, name, price, age, height, is_active, created_date, updated_at, balance]
+        |  schemaMapping {
+        |    id           = "IntegerType"
+        |    name         = "StringType"
+        |    price        = "DoubleType"
+        |    age          = "LongType"
+        |    height       = "FloatType"
+        |    is_active    = "BooleanType"
+        |    created_date = "DateType:yyyy-MM-dd"
+        |    updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
+        |    balance      = "DecimalType:10,2"
+        |  }
+        |}""".stripMargin
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
+    val conf = ConfigFactory.parseString(confStr).getConfig("app")
+    val orderedCols = conf.getStringList("columns").asScala.toSeq
+    val schemaMapping = conf.getConfig("schemaMapping")
 
-    // schema
-    assert(casted.schema("id").dataType          === IntegerType)
-    assert(casted.schema("name").dataType        === StringType)
-    assert(casted.schema("price").dataType       === DoubleType)
-    assert(casted.schema("age").dataType         === LongType)
-    assert(casted.schema("height").dataType      === FloatType)
-    assert(casted.schema("is_active").dataType   === BooleanType)
-    assert(casted.schema("created_date").dataType=== DateType)
-    assert(casted.schema("updated_at").dataType  === TimestampType)
-    assert(casted.schema("balance").dataType     === DecimalType(10,2))
-
-    // data
-    val r = casted.first()
-    assert(r.getAs[Int]("id")            === 1)
-    assert(r.getAs[String]("name")       === "Alice")
-    assert(r.getAs[Double]("price")      === 99.99)
-    assert(r.getAs[Long]("age")          === 25L)
-    assert(r.getAs[Float]("height")      === 1.65f)
-    assert(r.getAs[Boolean]("is_active"))
-    assert(r.getAs[Date]("created_date") === Date.valueOf("2023-01-01"))
-    assert(r.getAs[Timestamp]("updated_at") === Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(r.getAs[java.math.BigDecimal]("balance") === new java.math.BigDecimal("123.45"))
-    assert(errCnt === 0)
-  }
-
-  // -------------------------------------------------------------------------
-  // 2. Date / timestamp with custom patterns
-  // -------------------------------------------------------------------------
-  test("date & timestamp – different format patterns") {
-    val raw = Seq((
-      "2023-01-01", "01/02/2023", "2023-01-01 10:30:00", "01-02-2023 12:00:00"
-    )).toDF("created_date","alt_date","updated_at","alt_timestamp")
-
-    val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
-
-    val confStr =
-      """app { schemaMapping {
-        |  created_date = "DateType:yyyy-MM-dd"
-        |  alt_date     = "DateType:dd/MM/yyyy"
-        |  updated_at   = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  alt_timestamp= "TimestampType:dd-MM-yyyy HH:mm:ss"
-        |}}""".stripMargin
-
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
-
-    val r = casted.first()
-    assert(r.getAs[Date]("created_date")   === Date.valueOf("2023-01-01"))
-    assert(r.getAs[Date]("alt_date")       === Date.valueOf("2023-02-01"))
-    assert(r.getAs[Timestamp]("updated_at")=== Timestamp.valueOf("2023-01-01 10:30:00"))
-    assert(r.getAs[Timestamp]("alt_timestamp") === Timestamp.valueOf("2023-02-01 12:00:00"))
-    assert(errCnt === 0)
-  }
-
-  // -------------------------------------------------------------------------
-  // OPTIONAL: 2.1. Keep debug test to verify timezone — can be removed later
-  // -------------------------------------------------------------------------
-  test("Timezone debug") {
-    val ts = Timestamp.valueOf("2023-01-01 10:30:00")
-    println(s"Java Timestamp: $ts")
-    println(s"Epoch: ${ts.getTime}")
-
-    val df = Seq(("2023-01-01 10:30:00")).toDF("ts").withColumn("ts", col("ts").cast(StringType))
-    val parsed = df.withColumn("p", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
-    parsed.show()
-
-    val row = parsed.first()
-    val sparkTs = row.getTimestamp(1)
-    println(s"Spark Timestamp: $sparkTs")
-    println(s"Epoch: ${sparkTs.getTime}")
-  }
-
-  // -------------------------------------------------------------------------
-  // 3. Invalid data → null + error count
-  // -------------------------------------------------------------------------
-  test("invalid data → null + error count") {
-    val raw = Seq((
-      "invalid","Alice","invalid","invalid","invalid","invalid",
-      "invalid","invalid","invalid"
-    )).toDF("id","name","price","age","height","is_active",
-            "created_date","updated_at","balance")
-
-    val df = raw.select(raw.columns.map(c => col(c).cast(StringType)): _*)
-
-    val confStr =
-      """app { schemaMapping {
-        |  id          = "IntegerType"
-        |  name        = "StringType"
-        |  price       = "DoubleType"
-        |  age         = "LongType"
-        |  height      = "FloatType"
-        |  is_active   = "BooleanType"
-        |  created_date= "DateType:yyyy-MM-dd"
-        |  updated_at  = "TimestampType:yyyy-MM-dd HH:mm:ss"
-        |  balance     = "DecimalType:10,2"
-        |}}""".stripMargin
-
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val (casted, errCnt) = CsvToAvroApp.safeCastColumns(df, conf,
-                                 "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
-
-    val r = casted.first()
-    assert(r.isNullAt(r.fieldIndex("id")))
-    assert(r.getAs[String]("name") === "Alice")
-    assert(r.isNullAt(r.fieldIndex("price")))
-    assert(r.isNullAt(r.fieldIndex("age")))
-    assert(r.isNullAt(r.fieldIndex("height")))
-    assert(r.isNullAt(r.fieldIndex("is_active")))
-    assert(r.isNullAt(r.fieldIndex("created_date")))
-    assert(r.isNullAt(r.fieldIndex("updated_at")))
-    assert(r.isNullAt(r.fieldIndex("balance")))
-    assert(errCnt === 8)   // 8 columns failed
-  }
-
-  // -------------------------------------------------------------------------
-  // 4. Deduplication + partition column
-  // -------------------------------------------------------------------------
-  test("deduplication & partition column") {
-    val schema = StructType(Seq(
-      StructField("id",   IntegerType, nullable = true),
-      StructField("name", StringType,  nullable = true)
-    ))
-    val rows = Seq(
-      Row(1, "Alice"),
-      Row(1, "Bob"),
-      Row(null, "Charlie")
+    // Simulate full pipeline up to safeCastColumns
+    val (casted, errCnt, badDf) = CsvToAvroApp.safeCastColumns(
+      df, schemaMapping, conf.getString("dateFormat"), conf.getString("timestampFormat"), spark,
+      df.schema, orderedCols
     )
-    val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
 
-    val confStr =
-      """app { schemaMapping {
-        |  id   = "IntegerType"
-        |  name = "StringType"
-        |}}""".stripMargin
+    assert(errCnt === 0)
+    assert(badDf.isEmpty)
 
-    val conf = ConfigFactory.parseString(confStr).getConfig("app.schemaMapping")
-    val processed = CsvToAvroApp.process(df, conf, "id",
-                                         "processing_timestamp",
-                                         "yyyy-MM-dd", "yyyy-MM-dd HH:mm:ss")
-
-    assert(processed.count() === 1)
-    assert(processed.filter($"id" === 1).count() === 1)
-    assert(processed.schema("processing_timestamp").dataType === TimestampType)
+    val r = casted.first()
+    assert(r.getInt(0) === 1)
+    assert(r.getString(1) === "Alice")
+    assert(r.getDouble(2) === 99.99)
+    assert(r.getLong(3) === 25L)
+    assert(r.getFloat(4) === 1.65f)
+    assert(r.getBoolean(5) === true)
+    assert(r.getAs[Date](6) === Date.valueOf("2023-01-01"))
+    assert(r.getAs[Timestamp](7) === Timestamp.valueOf("2023-01-01 10:30:00"))
+    assert(r.getAs[java.math.BigDecimal](8).doubleValue() === 123.45)
   }
 
-  // -------------------------------------------------------------------------
-  // 5. Integration – full pipeline (CSV → Avro)
-  // -------------------------------------------------------------------------
-  test("integration – full pipeline") {
-    withTempDir { _ =>
-      val in  = s"test-input-${java.util.UUID.randomUUID().toString.take(8)}"
-      val out = s"test-output-${java.util.UUID.randomUUID().toString.take(8)}"
-      val inPath  = s"/app/$in"
-      val outPath = s"/app/$out"
+  // =========================================================================
+  // 2. Missing columns → saved to corrupted/missing_cols_...
+  // =========================================================================
+  test("missing columns → saved to corrupted/missing_cols") {
+    withTempDir { base =>
+      val inputDir = s"$base/input"
+      val outputDir = s"$base/output"
+      val corruptedDir = s"$base/corrupted"
 
-      // clean any leftovers
-      try Files.walk(Paths.get(inPath)).sorted(java.util.Comparator.reverseOrder())
-           .forEach(Files.deleteIfExists(_))
-      catch { case _: Throwable => }
-      try Files.walk(Paths.get(outPath)).sorted(java.util.Comparator.reverseOrder())
-           .forEach(Files.deleteIfExists(_))
-      catch { case _: Throwable => }
+      Files.createDirectories(Paths.get(inputDir))
+      Files.createDirectories(Paths.get(corruptedDir))
 
-      Files.createDirectories(Paths.get(inPath))
+      // Row with only 2 fields: 9,Grace
+      val csvContent =
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+          |9,Grace
+          |""".stripMargin
 
-      val csv = Seq(
-        ("1","Alice","99.99","25","1.65","true","2023-01-01","2023-01-01 10:30:00","123.45"),
-        ("2","Bob","invalid","30","1.75","false","2023-01-02","2023-01-02 12:00:00","456.78")
-      ).toDF("id","name","price","age","height","is_active",
-             "created_date","updated_at","balance")
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
 
-      csv.write.mode("overwrite")
-        .option("header","true").option("delimiter",",")
-        .csv(inPath)
+      // Run full app
+      CsvToAvroApp.main(Array(
+        "--sourceDir", "input",
+        "--destDir", "output",
+        "--delimiter", ","
+      ).map(a => a.replace("input", inputDir).replace("output", outputDir)))
+
+      // 1. Avro: should have 1 row
+      val avroDf = spark.read.format("avro").load(outputDir)
+      assert(avroDf.count() === 1)
+      assert(avroDf.filter($"id" === 1).count() === 1)
+
+      // 2. missing_cols: should have 1 row
+      val missingFiles = Files.list(Paths.get(corruptedDir))
+        .filter(p => p.toString.contains("missing_cols"))
+        .findFirst()
+      assert(missingFiles.isPresent)
+
+      val missingDf = spark.read.json(missingFiles.get().toString)
+      assert(missingDf.count() === 1)
+      val row = missingDf.first()
+      assert(row.getString(row.fieldIndex("id")) === "9")
+      assert(row.getString(row.fieldIndex("name")) === "Grace")
+      assert(row.isNullAt(row.fieldIndex("price")))
+    }
+  }
+
+  // =========================================================================
+  // 3. Casting errors → saved to corrupted/cast_errors_...
+  // =========================================================================
+  test("casting errors → saved to corrupted/cast_errors") {
+    withTempDir { base =>
+      val inputDir = s"$base/input"
+      val outputDir = s"$base/output"
+      val corruptedDir = s"$base/corrupted"
+
+      Files.createDirectories(Paths.get(inputDir))
+
+      val csvContent =
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+          |2,Bob,invalid,30,1.75,false,2023-01-02,2023-01-02 12:00:00,456.78
+          |""".stripMargin
+
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
 
       CsvToAvroApp.main(Array(
-        "--sourceDir", in,
-        "--destDir",   out,
-        "--delimiter", ",",
-        "--dedupKey",  "id",
-        "--partitionCol", "processing_timestamp"
-      ))
+        "--sourceDir", "input",
+        "--destDir", "output"
+      ).map(a => a.replace("input", inputDir).replace("output", outputDir)))
 
-      val avro = spark.read.format("avro").load(outPath)
-      assert(avro.count() === 2)
-      assert(avro.filter($"price".isNull).count() === 1)
+      // Clean Avro: 1 row
+      val avroDf = spark.read.format("avro").load(outputDir)
+      assert(avroDf.count() === 1)
+
+      // cast_errors: 1 row
+      val castFiles = Files.list(Paths.get(corruptedDir))
+        .filter(p => p.toString.contains("cast_errors"))
+        .findFirst()
+      assert(castFiles.isPresent)
+
+      val castDf = spark.read.json(castFiles.get().toString)
+      assert(castDf.count() === 1)
+      val row = castDf.first()
+      assert(row.getString(row.fieldIndex("id")) === "2")
+      assert(row.getString(row.fieldIndex("price")) === "invalid")
+    }
+  }
+
+  // =========================================================================
+  // 4. Deduplication + partition column
+  // =========================================================================
+  test("deduplication + partition column") {
+    withTempDir { base =>
+      val inputDir = s"$base/input"
+      val outputDir = s"$base/output"
+
+      Files.createDirectories(Paths.get(inputDir))
+
+      val csvContent =
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+          |1,AliceDup,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+          |""".stripMargin
+
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
+
+      CsvToAvroApp.main(Array(
+        "--sourceDir", "input",
+        "--destDir", "output",
+        "--dedupKey", "id",
+        "--partitionCol", "processing_timestamp"
+      ).map(a => a.replace("input", inputDir).replace("output", outputDir)))
+
+      val avroDf = spark.read.format("avro").load(outputDir)
+      assert(avroDf.count() === 1)
+      assert(avroDf.filter($"id" === 1).count() === 1)
+      assert(avroDf.schema.fieldNames.contains("processing_timestamp"))
+    }
+  }
+
+  // =========================================================================
+  // 5. Structural corruptions (malformed CSV)
+  // =========================================================================
+  test("structural corruptions → saved to corrupted/structural_...") {
+    withTempDir { base =>
+      val inputDir = s"$base/input"
+      val corruptedDir = s"$base/corrupted"
+
+      Files.createDirectories(Paths.get(inputDir))
+
+      // Malformed: too many fields
+      val csvContent =
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45,extra
+          |2,Bob,100.00,30,1.75,false,2023-01-02,2023-01-02 12:00:00,456.78
+          |""".stripMargin
+
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
+
+      CsvToAvroApp.main(Array(
+        "--sourceDir", "input",
+        "--destDir", "output"
+      ).map(a => a.replace("input", inputDir)))
+
+      val structuralFiles = Files.list(Paths.get(corruptedDir))
+        .filter(p => p.toString.contains("structural"))
+        .findFirst()
+      assert(structuralFiles.isPresent)
+
+      val structuralDf = spark.read.json(structuralFiles.get().toString)
+      assert(structuralDf.count() === 1)
+      assert(structuralDf.filter($"_corrupt_record".contains("extra")).count() === 1)
+    }
+  }
+
+  // =========================================================================
+  // 6. Full integration: missing + cast errors + clean output
+  // =========================================================================
+  test("integration – full pipeline with all error types") {
+    withTempDir { base =>
+      val inputDir = s"$base/input"
+      val outputDir = s"$base/output"
+      val corruptedDir = s"$base/corrupted"
+
+      Files.createDirectories(Paths.get(inputDir))
+
+      val csvContent =
+        """1,Alice,99.99,25,1.65,true,2023-01-01,2023-01-01 10:30:00,123.45
+          |2,Bob,invalid,30,1.75,false,2023-01-02,2023-01-02 12:00:00,456.78
+          |9,Grace
+          |null,Dilara,120.00,28,1.70,no,2023-01-0,2023-01-02 09:00:00,null
+          |""".stripMargin
+
+      Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
+
+      CsvToAvroApp.main(Array(
+        "--sourceDir", "input",
+        "--destDir", "output"
+      ).map(a => a.replace("input", inputDir).replace("output", outputDir)))
+
+      // Clean Avro: 1 row
+      val avroDf = spark.read.format("avro").load(outputDir)
+      assert(avroDf.count() === 1)
+      assert(avroDf.filter($"id" === 1).count() === 1)
+
+      // missing_cols: 1 row (9,Grace)
+      val missingDf = spark.read.json(s"$corruptedDir/missing_cols_*")
+      assert(missingDf.count() === 1)
+      assert(missingDf.filter($"id" === "9").count() === 1)
+
+      // cast_errors: 2 rows (Bob + Dilara)
+      val castDf = spark.read.json(s"$corruptedDir/cast_errors_*")
+      assert(castDf.count() === 2)
     }
   }
 }

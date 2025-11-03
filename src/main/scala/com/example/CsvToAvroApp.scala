@@ -113,14 +113,15 @@ object CsvToAvroApp {
         }
 
         // --- MISSING COLUMNS VALIDATION ---
-        import org.apache.spark.sql.functions.{array, size}
+        import org.apache.spark.sql.functions.{when}
+
         val expectedCount = orderedCols.size
-        val df_valid_structure = df_after_corrupt.filter(
-          size(array(df_after_corrupt.columns.map(col): _*)) === expectedCount
-        )
-        val df_missing_cols = df_after_corrupt.filter(
-          size(array(df_after_corrupt.columns.map(col): _*)) =!= expectedCount
-        )
+        val nonNullCountExpr = orderedCols.map { c =>
+          when(col(c).isNotNull, 1).otherwise(0)
+        }.reduce(_ + _)
+
+        val df_valid_structure = df_after_corrupt.filter(nonNullCountExpr === expectedCount)
+        val df_missing_cols = df_after_corrupt.filter(nonNullCountExpr =!= expectedCount)
 
         if (!df_missing_cols.isEmpty) {
           val path = s"$outputDir/../corrupted/missing_cols_${System.currentTimeMillis()}"

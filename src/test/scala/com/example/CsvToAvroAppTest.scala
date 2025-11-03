@@ -88,7 +88,6 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      // RELATIVE PATHS ONLY
       val sourceRel = Paths.get(inputDir).getFileName.toString
       val destRel   = Paths.get(outputDir).getFileName.toString
 
@@ -168,9 +167,9 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // -------------------------------------------------------------------------
-  // 3. Invalid data → corrupted JSON
+  // 3. Invalid data to null + corrupted JSON files
   // -------------------------------------------------------------------------
-  test("invalid data → null + corrupted JSON files") {
+  test("invalid data to null + corrupted JSON files") {
     withTempDir { base =>
       val inputDir  = s"$base/input"
       val outputDir = s"$base/output"
@@ -225,7 +224,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val castErrorFile = Files.list(corruptDir)
         .filter(p => p.toString.contains("cast_errors"))
         .findFirst()
-        .getOrElse(fail("No cast_errors file found"))
+        .orElseThrow(() => fail("No cast_errors file found"))
 
       val bad = spark.read.json(castErrorFile.toString)
       assert(bad.count() === 1)
@@ -354,7 +353,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val castErrorFile = Files.list(corruptDir)
         .filter(p => p.toString.contains("cast_errors"))
         .findFirst()
-        .get
+        .orElseThrow(() => fail("No cast_errors file found"))
 
       val badDf = spark.read.json(castErrorFile.toString)
       assert(badDf.count() === 1)

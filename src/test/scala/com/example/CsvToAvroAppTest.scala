@@ -88,8 +88,9 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      val sourceRel = Paths.get(inputDir).getFileName.toString
-      val destRel   = Paths.get(outputDir).getFileName.toString
+      // CORRECT RELATIVE PATH FROM /app
+      val sourceRel = Paths.get("/app").relativize(Paths.get(inputDir)).toString
+      val destRel   = Paths.get("/app").relativize(Paths.get(outputDir)).toString
 
       CsvToAvroApp.main(Array(
         "--sourceDir", sourceRel,
@@ -148,8 +149,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      val sourceRel = Paths.get(inputDir).getFileName.toString
-      val destRel   = Paths.get(outputDir).getFileName.toString
+      val sourceRel = Paths.get("/app").relativize(Paths.get(inputDir)).toString
+      val destRel   = Paths.get("/app").relativize(Paths.get(outputDir)).toString
 
       CsvToAvroApp.main(Array(
         "--sourceDir", sourceRel,
@@ -207,8 +208,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      val sourceRel = Paths.get(inputDir).getFileName.toString
-      val destRel   = Paths.get(outputDir).getFileName.toString
+      val sourceRel = Paths.get("/app").relativize(Paths.get(inputDir)).toString
+      val destRel   = Paths.get("/app").relativize(Paths.get(outputDir)).toString
 
       CsvToAvroApp.main(Array(
         "--sourceDir", sourceRel,
@@ -266,8 +267,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      val sourceRel = Paths.get(inputDir).getFileName.toString
-      val destRel   = Paths.get(outputDir).getFileName.toString
+      val sourceRel = Paths.get("/app").relativize(Paths.get(inputDir)).toString
+      val destRel   = Paths.get("/app").relativize(Paths.get(outputDir)).toString
 
       CsvToAvroApp.main(Array(
         "--sourceDir", sourceRel,
@@ -327,8 +328,8 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       val confPath = s"$base/application.conf"
       Files.write(Paths.get(confPath), testConf.getBytes)
 
-      val sourceRel = Paths.get(inputDir).getFileName.toString
-      val destRel   = Paths.get(outputDir).getFileName.toString
+      val sourceRel = Paths.get("/app").relativize(Paths.get(inputDir)).toString
+      val destRel   = Paths.get("/app").relativize(Paths.get(outputDir)).toString
 
       CsvToAvroApp.main(Array(
         "--sourceDir", sourceRel,

@@ -158,98 +158,126 @@ object CsvToAvroApp {
 
   // --- UPDATED: returns bad rows too ---
   def safeCastColumns(
-    df: DataFrame,
-    config: Config,
-    globalDateFmt: String,
-    globalTsFmt: String,
-    spark: SparkSession,
-    stringSchema: StructType,
-    originalCols: Seq[String]
+  df: DataFrame,
+  config: Config,
+  globalDateFmt: String,
+  globalTsFmt: String,
+  spark: SparkSession,
+  stringSchema: StructType,
+  originalCols: Seq[String]
   ): (DataFrame, Long, DataFrame) = {
 
     import df.sparkSession.implicits._
-    var result = df
+    import org.apache.spark.sql.functions._
 
-    // --- STEP 1: ADD _orig FOR ALL COLUMNS UP FRONT ---
-    val origCols = originalCols.map(c => col(c).as(s"${c}_orig"))
-    result = result.select((result.columns.map(col) ++ origCols): _*)
-    // Now: id, name, price, ..., id_orig, name_orig, price_orig, ...
+    // -----------------------------------------------------------------
+    // 1. Add *_orig columns for *all* source columns in one go
+    // -----------------------------------------------------------------
+    val origSelect = originalCols.map(c => col(c).as(s"${c}_orig"))
+    var result = df.select(df.columns.map(col) ++ origSelect: _*)
 
-    var errorCount = 0L
-    val badRows = scala.collection.mutable.ArrayBuffer[Row]()
+    var totalErrors = 0L
+    val badRowBuffer = scala.collection.mutable.ArrayBuffer[Row]()
 
+    // -----------------------------------------------------------------
+    // 2. Cast column-by-column
+    // -----------------------------------------------------------------
     config.entrySet().forEach { entry =>
       val colName = entry.getKey
       if (result.columns.contains(colName)) {
-        val targetType = config.getString(colName)
-        val parts = targetType.split(":")
-        val castExpr = parts(0)
-        val fmt = if (parts.length > 1) parts(1) else castExpr match {
-          case "DateType" => globalDateFmt
-          case "TimestampType" => globalTsFmt
-          case _ => ""
-        }
 
-        val castType = castExpr match {
-          case "StringType" => StringType
-          case "IntegerType" => IntegerType
-          case "LongType" => LongType
-          case "DoubleType" => DoubleType
-          case "FloatType" => FloatType
-          case "BooleanType" => BooleanType
-          case "DateType" => DateType
+        val target = config.getString(colName)
+        val Array(castExpr, fmtRaw @ _*) = target.split(":", 2)
+        val fmt = if (fmtRaw.nonEmpty) fmtRaw(0) else
+          castExpr match {
+            case "DateType"      => globalDateFmt
+            case "TimestampType" => globalTsFmt
+            case _               => ""
+          }
+
+        val dataType = castExpr match {
+          case "StringType"    => StringType
+          case "IntegerType"   => IntegerType
+          case "LongType"      => LongType
+          case "DoubleType"    => DoubleType
+          case "FloatType"     => FloatType
+          case "BooleanType"   => BooleanType
+          case "DateType"      => DateType
           case "TimestampType" => TimestampType
           case "DecimalType" =>
-            val Array(prec, scale) = fmt.split(",").map(_.trim.toInt)
-            DecimalType(prec, scale)
+            val Array(p, s) = fmt.split(",").map(_.trim.toInt)
+            DecimalType(p, s)
           case _ => StringType
         }
 
-        val castedValue = if (castExpr == "DateType" && fmt.nonEmpty) {
-          to_date(col(colName), fmt)
-        } else if (castExpr == "TimestampType" && fmt.nonEmpty) {
-          to_timestamp(col(colName), fmt)
-        } else {
-          col(colName).cast(castType)
+        // -----------------------------------------------------------------
+        //   cast expression (date / timestamp need a format)
+        // -----------------------------------------------------------------
+        val casted = castExpr match {
+          case "DateType" if fmt.nonEmpty      => to_date(col(colName), fmt)
+          case "TimestampType" if fmt.nonEmpty => to_timestamp(col(colName), fmt)
+          case _                               => col(colName).cast(dataType)
         }
 
-        result = result.withColumn(colName, castedValue)
+        result = result.withColumn(colName, casted)
 
-        val failures = result.filter(
-          castedValue.isNull &&
+        // -----------------------------------------------------------------
+        //   rows that turned NULL although the original string was not empty
+        // -----------------------------------------------------------------
+        val failed = result.filter(
+          casted.isNull &&
           col(s"${colName}_orig").isNotNull &&
           trim(col(s"${colName}_orig")) =!= ""
         )
-        val failCount = failures.count()
-        errorCount += failCount
 
-        if (failCount > 0) {
-          logger.warn(s"Casting failures for $colName ($castExpr): $failCount")
-          failures.take(5).foreach { row =>
-            logger.warn(s"Failed row: ${row.mkString(", ")}")
-          }
+        val cnt = failed.count()
+        totalErrors += cnt
 
-          // ← NOW ALL _orig COLUMNS EXIST
-          val origColsSelect = originalCols.map(c => col(s"${c}_orig").as(c))
-          val badRowStrings = failures.select(origColsSelect: _*)
-          badRowStrings.take(100).foreach(badRows += _)
+        if (cnt > 0) {
+          logger.warn(s"Casting failures for $colName ($castExpr): $cnt")
+          failed.take(5).foreach(r => logger.warn(s"Failed row: ${r.mkString(", ")}"))
         }
 
-        // NO drop(origCol) — we keep _orig until the end
+        // keep the original values for the bad rows (we will rebuild the DF later)
+        val origSelectBad = originalCols.map(c => col(s"${c}_orig").as(c))
+        failed.select(origSelectBad: _*).take(100).foreach(badRowBuffer += _)
       }
     }
 
-    // Optional: drop all _orig before returning clean DF
+    // -----------------------------------------------------------------
+    // 3. Drop all *_orig columns from the *good* data frame
+    // -----------------------------------------------------------------
     val cleanCols = originalCols.map(col)
     result = result.select(cleanCols: _*)
 
-    val badDf = if (badRows.nonEmpty) {
-      val javaRows = badRows.toSeq.asJava
-      spark.createDataFrame(javaRows, stringSchema)
+    // -----------------------------------------------------------------
+    // 4. Build the *bad* DataFrame (original string values)
+    // -----------------------------------------------------------------
+    val badDf = if (badRowBuffer.nonEmpty) {
+      import scala.collection.JavaConverters._
+      spark.createDataFrame(badRowBuffer.toSeq.asJava, stringSchema)
     } else {
       spark.emptyDataFrame
     }
 
-    (result, errorCount, badDf)
+    // -----------------------------------------------------------------
+    // 5. **FINAL FILTER** – keep only rows that have *no* NULL where a
+    //     non-empty original existed.  This is the “filter out any row
+    //     with NULL in a column that had a non-empty original value”.
+    // -----------------------------------------------------------------
+    //   Build a boolean column that is true if *any* cast failed
+    val anyFailedCast = originalCols.map { c =>
+      col(c).isNull && col(s"${c}_orig").isNotNull && trim(col(s"${c}_orig")) =!= ""
+    }.reduce(_ || _)
+
+    val withFlag = result.withColumn("_any_cast_fail", anyFailedCast)
+
+    val dfClean = withFlag.filter(!col("_any_cast_fail")).drop("_any_cast_fail")
+    val dfStillBad = withFlag.filter(col("_any_cast_fail"))   // (optional)
+
+    // -----------------------------------------------------------------
+    // 6. Return
+    // -----------------------------------------------------------------
+    (dfClean, totalErrors, badDf)   // badDf still contains the original strings
   }
 }

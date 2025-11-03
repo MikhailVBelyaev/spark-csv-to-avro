@@ -8,7 +8,7 @@ import org.apache.spark.sql.functions._
 import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters
 
 /**
   * Unit + integration tests for the **new** CsvToAvroApp.

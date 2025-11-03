@@ -120,7 +120,7 @@ object CsvToAvroApp {
 
         // --- CASTING + CAPTURE TYPE ERRORS ---
         val (df_typed, castErrorCount, df_cast_bad) = safeCastColumns(
-          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark, stringSchema)
+          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark, stringSchema, orderedCols)
 
         // Save casting errors
         if (!df_cast_bad.isEmpty) {
@@ -162,7 +162,8 @@ object CsvToAvroApp {
       globalDateFmt: String,
       globalTsFmt: String,
       spark: SparkSession,
-      stringSchema: StructType
+      stringSchema: StructType,
+      originalCols: Seq[String]
   ): (DataFrame, Long, DataFrame) = {
 
     import df.sparkSession.implicits._

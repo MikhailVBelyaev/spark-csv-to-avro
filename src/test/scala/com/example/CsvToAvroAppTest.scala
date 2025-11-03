@@ -90,7 +90,7 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(r.getBoolean(5) === true)
     assert(r.getAs[Date](6) === Date.valueOf("2023-01-01"))
 
-    // FIX: Use Spark to parse expected timestamp in UTC+5
+    // Use Spark to parse timestamp in correct timezone
     val expectedTs = spark.sql(
       "SELECT to_timestamp('2023-01-01 10:30:00', 'yyyy-MM-dd HH:mm:ss') AS ts"
     ).first().getTimestamp(0)
@@ -117,22 +117,23 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
 
       Files.write(Paths.get(s"$inputDir/part-00000.csv"), csvContent.getBytes)
 
-      // FIX: Pass relative path, app will resolve to /app/input
+      // Run app with paths relative to /app
       CsvToAvroApp.main(Array(
         "--sourceDir", "input",
         "--destDir", "output"
       ))
 
-      // Copy files into container's /app
+      // Copy test data into container
       import sys.process._
       s"docker cp $inputDir spark_csv_test:/app/input".!
       s"docker cp $outputDir spark_csv_test:/app/output".!
       s"docker cp $corruptedDir spark_csv_test:/app/corrupted".!
 
-      // Re-run inside container
-      s"docker exec spark_csv_test bash -c 'cd /app && java -cp target/scala-2.12/test-classes:... CsvToAvroApp --sourceDir input --destDir output'".!
+      // Run app inside container
+      s"docker exec spark_csv_test bash -c 'cd /app && sbt \"runMain com.example.CsvToAvroApp --sourceDir input --destDir output\"'".!
 
-      val avroDf = spark.read.format("avro").load(s"$outputDir")
+      // Read results from host
+      val avroDf = spark.read.format("avro").load(outputDir)
       assert(avroDf.count() === 1)
 
       val missingDf = spark.read.json(s"$corruptedDir/missing_cols_*")
@@ -140,3 +141,5 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
       assert(missingDf.filter($"id" === "9").count() === 1)
     }
   }
+
+}

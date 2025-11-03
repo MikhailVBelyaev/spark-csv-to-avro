@@ -200,27 +200,38 @@ object CsvToAvroApp {
           case _ => StringType
         }
 
-        if (castExpr == "DateType" && fmt.nonEmpty) {
-          result = result.withColumn(colName, to_date(col(colName), fmt))
+        // --- CAST EXPRESSION ---
+        val castedValue = if (castExpr == "DateType" && fmt.nonEmpty) {
+          to_date(col(colName), fmt)
         } else if (castExpr == "TimestampType" && fmt.nonEmpty) {
-          result = result.withColumn(colName, to_timestamp(col(colName), fmt))
+          to_timestamp(col(colName), fmt)
         } else {
-          result = result.withColumn(colName, col(colName).cast(castType))
+          col(colName).cast(castType)
         }
 
-        val failures = result.filter(col(colName).isNull && col(origCol).isNotNull)
+        result = result.withColumn(colName, castedValue)
+
+        // --- DETECT FAILURES ---
+        val failures = result.filter(
+          castedValue.isNull && 
+          col(origCol).isNotNull && 
+          trim(col(origCol)) =!= ""
+        )
         val failCount = failures.count()
         errorCount += failCount
+
         if (failCount > 0) {
           logger.warn(s"Casting failures for $colName ($castExpr): $failCount")
           failures.take(5).foreach { row =>
             logger.warn(s"Failed row: ${row.mkString(", ")}")
           }
-          // failures.take(100).foreach(badRows += _)  // collect for saving
-          val originalCols = stringSchema.fieldNames
-          val cleanFailures = failures.select(originalCols.map(col): _*)
-          cleanFailures.take(100).foreach(badRows += _)
+
+          // ← Use _orig columns (still strings!)
+          val origColsSelect = originalCols.map(c => col(s"${c}_orig").as(c))
+          val badRowStrings = failures.select(origColsSelect: _*)
+          badRowStrings.take(100).foreach(badRows += _)
         }
+
         result = result.drop(origCol)
       }
     }

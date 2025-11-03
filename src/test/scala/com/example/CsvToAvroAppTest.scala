@@ -35,16 +35,26 @@ class CsvToAvroAppTest extends AnyFunSuite with BeforeAndAfterAll {
   import spark.implicits._
   import org.apache.spark.sql.functions._
 
+  // Ensure /app/tmp exists
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    Files.createDirectories(Paths.get("/app/tmp"))
+  }
+
   override def afterAll(): Unit = spark.stop()
 
-  /** Helper – creates a temporary directory and deletes it afterwards */
+  /** Helper – creates a temporary directory **inside /app/tmp** */
   def withTempDir(testCode: String => Unit): Unit = {
-    val tmp = Files.createTempDirectory("csv_avro_test").toString
+    val appTmp = "/app/tmp"
+    Files.createDirectories(Paths.get(appTmp))
+    val tmp = Files.createTempDirectory(Paths.get(appTmp), "csv_avro_test").toString
     try testCode(tmp)
     finally {
-      Files.walk(Paths.get(tmp))
-        .sorted(java.util.Comparator.reverseOrder())
-        .forEach(Files.deleteIfExists(_))
+      try {
+        Files.walk(Paths.get(tmp))
+          .sorted(java.util.Comparator.reverseOrder())
+          .forEach(Files.deleteIfExists(_))
+      } catch { case _: Throwable => }
     }
   }
 

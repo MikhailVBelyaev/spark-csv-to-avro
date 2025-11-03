@@ -157,17 +157,23 @@ object CsvToAvroApp {
 
   // --- UPDATED: returns bad rows too ---
   def safeCastColumns(
-      df: DataFrame,
-      config: Config,
-      globalDateFmt: String,
-      globalTsFmt: String,
-      spark: SparkSession,
-      stringSchema: StructType,
-      originalCols: Seq[String]
+    df: DataFrame,
+    config: Config,
+    globalDateFmt: String,
+    globalTsFmt: String,
+    spark: SparkSession,
+    stringSchema: StructType,
+    originalCols: Seq[String]
   ): (DataFrame, Long, DataFrame) = {
 
     import df.sparkSession.implicits._
     var result = df
+
+    // --- STEP 1: ADD _orig FOR ALL COLUMNS UP FRONT ---
+    val origCols = originalCols.map(c => col(c).as(s"${c}_orig"))
+    result = result.select((result.columns.map(col) ++ origCols): _*)
+    // Now: id, name, price, ..., id_orig, name_orig, price_orig, ...
+
     var errorCount = 0L
     val badRows = scala.collection.mutable.ArrayBuffer[Row]()
 
@@ -182,9 +188,6 @@ object CsvToAvroApp {
           case "TimestampType" => globalTsFmt
           case _ => ""
         }
-
-        val origCol = s"${colName}_orig"
-        result = result.withColumn(origCol, col(colName))
 
         val castType = castExpr match {
           case "StringType" => StringType
@@ -201,7 +204,6 @@ object CsvToAvroApp {
           case _ => StringType
         }
 
-        // --- CAST EXPRESSION ---
         val castedValue = if (castExpr == "DateType" && fmt.nonEmpty) {
           to_date(col(colName), fmt)
         } else if (castExpr == "TimestampType" && fmt.nonEmpty) {
@@ -212,11 +214,10 @@ object CsvToAvroApp {
 
         result = result.withColumn(colName, castedValue)
 
-        // --- DETECT FAILURES ---
         val failures = result.filter(
-          castedValue.isNull && 
-          col(origCol).isNotNull && 
-          trim(col(origCol)) =!= ""
+          castedValue.isNull &&
+          col(s"${colName}_orig").isNotNull &&
+          trim(col(s"${colName}_orig")) =!= ""
         )
         val failCount = failures.count()
         errorCount += failCount
@@ -227,15 +228,19 @@ object CsvToAvroApp {
             logger.warn(s"Failed row: ${row.mkString(", ")}")
           }
 
-          // ← Use _orig columns (still strings!)
+          // ← NOW ALL _orig COLUMNS EXIST
           val origColsSelect = originalCols.map(c => col(s"${c}_orig").as(c))
           val badRowStrings = failures.select(origColsSelect: _*)
           badRowStrings.take(100).foreach(badRows += _)
         }
 
-        result = result.drop(origCol)
+        // NO drop(origCol) — we keep _orig until the end
       }
     }
+
+    // Optional: drop all _orig before returning clean DF
+    val cleanCols = originalCols.map(col)
+    result = result.select(cleanCols: _*)
 
     val badDf = if (badRows.nonEmpty) {
       val javaRows = badRows.toSeq.asJava

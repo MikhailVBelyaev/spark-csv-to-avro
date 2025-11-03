@@ -156,44 +156,40 @@ object CsvToAvroApp {
     }
   }
 
-  // --- UPDATED: returns bad rows too ---
+  // ==================================================================
+  // SAFE CASTING: Returns (clean DF, error count, corrupted DF)
+  // ==================================================================
   def safeCastColumns(
-  df: DataFrame,
-  config: Config,
-  globalDateFmt: String,
-  globalTsFmt: String,
-  spark: SparkSession,
-  stringSchema: StructType,
-  originalCols: Seq[String]
+    df: DataFrame,
+    config: Config,
+    globalDateFmt: String,
+    globalTsFmt: String,
+    spark: SparkSession,
+    stringSchema: StructType,
+    originalCols: Seq[String]
   ): (DataFrame, Long, DataFrame) = {
 
     import df.sparkSession.implicits._
     import org.apache.spark.sql.functions._
 
-    // -----------------------------------------------------------------
-    // 1. Add *_orig columns for *all* source columns in one go
-    // -----------------------------------------------------------------
+    // 1. Add *_orig for all columns
     val origSelect = originalCols.map(c => col(c).as(s"${c}_orig"))
     var result = df.select(df.columns.map(col) ++ origSelect: _*)
 
     var totalErrors = 0L
     val badRowBuffer = scala.collection.mutable.ArrayBuffer[Row]()
 
-    // -----------------------------------------------------------------
     // 2. Cast column-by-column
-    // -----------------------------------------------------------------
     config.entrySet().forEach { entry =>
       val colName = entry.getKey
       if (result.columns.contains(colName)) {
-
         val target = config.getString(colName)
         val Array(castExpr, fmtRaw @ _*) = target.split(":", 2)
-        val fmt = if (fmtRaw.nonEmpty) fmtRaw(0) else
-          castExpr match {
-            case "DateType"      => globalDateFmt
-            case "TimestampType" => globalTsFmt
-            case _               => ""
-          }
+        val fmt = if (fmtRaw.nonEmpty) fmtRaw(0) else castExpr match {
+          case "DateType"      => globalDateFmt
+          case "TimestampType" => globalTsFmt
+          case _               => ""
+        }
 
         val dataType = castExpr match {
           case "StringType"    => StringType
@@ -210,9 +206,6 @@ object CsvToAvroApp {
           case _ => StringType
         }
 
-        // -----------------------------------------------------------------
-        //   cast expression (date / timestamp need a format)
-        // -----------------------------------------------------------------
         val casted = castExpr match {
           case "DateType" if fmt.nonEmpty      => to_date(col(colName), fmt)
           case "TimestampType" if fmt.nonEmpty => to_timestamp(col(colName), fmt)
@@ -221,9 +214,6 @@ object CsvToAvroApp {
 
         result = result.withColumn(colName, casted)
 
-        // -----------------------------------------------------------------
-        //   rows that turned NULL although the original string was not empty
-        // -----------------------------------------------------------------
         val failed = result.filter(
           casted.isNull &&
           col(s"${colName}_orig").isNotNull &&
@@ -232,27 +222,17 @@ object CsvToAvroApp {
 
         val cnt = failed.count()
         totalErrors += cnt
-
         if (cnt > 0) {
           logger.warn(s"Casting failures for $colName ($castExpr): $cnt")
           failed.take(5).foreach(r => logger.warn(s"Failed row: ${r.mkString(", ")}"))
         }
 
-        // keep the original values for the bad rows (we will rebuild the DF later)
         val origSelectBad = originalCols.map(c => col(s"${c}_orig").as(c))
         failed.select(origSelectBad: _*).take(100).foreach(badRowBuffer += _)
       }
     }
 
-    // -----------------------------------------------------------------
-    // 3. Drop all *_orig columns from the *good* data frame
-    // -----------------------------------------------------------------
-    val cleanCols = originalCols.map(col)
-    result = result.select(cleanCols: _*)
-
-    // -----------------------------------------------------------------
-    // 4. Build the *bad* DataFrame (original string values)
-    // -----------------------------------------------------------------
+    // 3. Build corrupted DF from original strings
     val badDf = if (badRowBuffer.nonEmpty) {
       import scala.collection.JavaConverters._
       spark.createDataFrame(badRowBuffer.toSeq.asJava, stringSchema)
@@ -260,24 +240,18 @@ object CsvToAvroApp {
       spark.emptyDataFrame
     }
 
-    // -----------------------------------------------------------------
-    // 5. **FINAL FILTER** – keep only rows that have *no* NULL where a
-    //     non-empty original existed.  This is the “filter out any row
-    //     with NULL in a column that had a non-empty original value”.
-    // -----------------------------------------------------------------
-    //   Build a boolean column that is true if *any* cast failed
+    // 4. FINAL FILTER: keep only rows with NO failed casts
     val anyFailedCast = originalCols.map { c =>
       col(c).isNull && col(s"${c}_orig").isNotNull && trim(col(s"${c}_orig")) =!= ""
     }.reduce(_ || _)
 
     val withFlag = result.withColumn("_any_cast_fail", anyFailedCast)
+    val dfCleanWithOrig = withFlag.filter(!col("_any_cast_fail"))
 
-    val dfClean = withFlag.filter(!col("_any_cast_fail")).drop("_any_cast_fail")
-    val dfStillBad = withFlag.filter(col("_any_cast_fail"))   // (optional)
+    // 5. Drop _orig only from clean data
+    val cleanCols = originalCols.map(col)
+    val dfCleanFinal = dfCleanWithOrig.select(cleanCols: _*)
 
-    // -----------------------------------------------------------------
-    // 6. Return
-    // -----------------------------------------------------------------
-    (dfClean, totalErrors, badDf)   // badDf still contains the original strings
+    (dfCleanFinal, totalErrors, badDf)
   }
 }

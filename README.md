@@ -236,3 +236,18 @@ Mihail Belyaev
 GitHub: https://github.com/MikhailVBelyaev
 
 ⸻
+
+
+Raw CSV
+   ↓
+[Read all as String] → df_raw_strings
+   ↓
+[Drop _corrupt_record] → df_after_corrupt
+   ↓
+[Count non-null columns] → nonNullCount === 9?
+   ├─→ YES → df_valid_structure → safeCastColumns → clean Avro
+   └─→ NO  → df_missing_cols → save to /corrupted/missing_cols_...
+   ↓
+[safeCastColumns] → capture cast failures → /corrupted/cast_errors_...
+   ↓
+[filter id not null] → [add timestamp] → [dedup by id] → write Avro

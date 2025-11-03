@@ -9,6 +9,7 @@ import com.typesafe.config.ConfigFactory
 import java.nio.file.{Files, Paths}
 import java.sql.{Date, Timestamp}
 import scala.util.Try
+import scala.collection.JavaConverters._
 
 /**
   * Unit + integration tests for FINAL CsvToAvroApp.

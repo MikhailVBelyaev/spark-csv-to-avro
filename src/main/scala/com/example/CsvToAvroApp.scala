@@ -4,7 +4,6 @@ import org.apache.spark.sql.{SparkSession, DataFrame, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import com.typesafe.config.{Config, ConfigFactory}
-import scala.util.Try
 import org.apache.logging.log4j.{LogManager, Logger}
 import scopt.OParser
 import scala.collection.JavaConverters._
@@ -29,20 +28,19 @@ object CsvToAvroApp {
       val fmt = if (parts.length > 1) parts(1) else ""
 
       val dataType = typeName match {
-        case "StringType" => StringType
-        case "IntegerType" => IntegerType
-        case "LongType" => LongType
-        case "DoubleType" => DoubleType
-        case "FloatType" => FloatType
-        case "BooleanType" => BooleanType
-        case "DateType" => DateType
+        case "StringType"    => StringType
+        case "IntegerType"   => IntegerType
+        case "LongType"      => LongType
+        case "DoubleType"    => DoubleType
+        case "FloatType"     => FloatType
+        case "BooleanType"   => BooleanType
+        case "DateType"      => DateType
         case "TimestampType" => TimestampType
         case "DecimalType" =>
           val Array(prec, scale) = fmt.split(",").map(_.trim.toInt)
           DecimalType(prec, scale)
         case _ => StringType
       }
-
       StructField(name, dataType, nullable = true)
     }
     StructType(fields)
@@ -52,11 +50,9 @@ object CsvToAvroApp {
     val conf = ConfigFactory.load().getConfig("app")
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
-    import scala.collection.JavaConverters._
-    val orderedCols = conf.getStringList("columns").asScala
+    val orderedCols = conf.getStringList("columns").asScala.toSeq
     val schema = buildSchema(conf.getConfig("schemaMapping"), orderedCols)
 
-    // Command-line arg parsing
     val builder = OParser.builder[AppConfig]
     val parser = {
       import builder._
@@ -88,51 +84,65 @@ object CsvToAvroApp {
         val dedupKey = cliConfig.dedupKey
         val partitionCol = cliConfig.partitionCol
 
-        // --- READ CSV: NO SCHEMA, ALL STRING, NO HEADER ---
+        // --- READ CSV: ALL STRING, NO HEADER ---
         val df_raw_strings = spark.read
           .format("csv")
           .option("header", "false")
           .option("delimiter", delimiter)
           .option("mode", "PERMISSIVE")
           .option("columnNameOfCorruptRecord", "_corrupt_record")
-          .option("inferSchema", "false")  // ← ADDED
+          .option("inferSchema", "false")
           .load(inputDir)
 
-        // Rename _c0, _c1, ... → id, name, ...
         val df_named = df_raw_strings.toDF(orderedCols: _*)
 
-        // --- STRUCTURAL CORRUPTIONS ---
+        // --- STRUCTURAL CORRUPTIONS (malformed rows) ---
         val hasCorrupt = df_named.columns.contains("_corrupt_record")
-        val (df_clean_strings, df_structural_bad) = if (hasCorrupt) {
-          val bad  = df_named.filter(col("_corrupt_record").isNotNull)
+        val (df_after_corrupt, df_structural_bad) = if (hasCorrupt) {
+          val bad = df_named.filter(col("_corrupt_record").isNotNull)
           val good = df_named.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
           (good, bad)
         } else {
           (df_named, spark.emptyDataFrame)
         }
-        val stringSchema = df_clean_strings.schema
 
-        // Save structural bad rows
         if (!df_structural_bad.isEmpty) {
           val path = s"$outputDir/../corrupted/structural_${System.currentTimeMillis()}"
           logger.warn(s"Saving ${df_structural_bad.count()} structural corrupt rows → $path")
           df_structural_bad.write.mode("overwrite").json(path)
         }
 
-        // --- CASTING + CAPTURE TYPE ERRORS ---
-        val (df_typed, castErrorCount, df_cast_bad) = safeCastColumns(
-          df_clean_strings, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark, stringSchema, orderedCols)
+        // --- MISSING COLUMNS VALIDATION ---
+        import org.apache.spark.sql.functions.{array, size}
+        val expectedCount = orderedCols.size
+        val df_valid_structure = df_after_corrupt.filter(
+          size(array(df_after_corrupt.columns.map(col): _*)) === expectedCount
+        )
+        val df_missing_cols = df_after_corrupt.filter(
+          size(array(df_after_corrupt.columns.map(col): _*)) =!= expectedCount
+        )
 
-        // Save casting errors
+        if (!df_missing_cols.isEmpty) {
+          val path = s"$outputDir/../corrupted/missing_cols_${System.currentTimeMillis()}"
+          logger.warn(s"Saving ${df_missing_cols.count()} rows with missing columns → $path")
+          df_missing_cols.write.mode("overwrite").json(path)
+        }
+
+        val stringSchema = df_valid_structure.schema
+
+        // --- CASTING + CAPTURE TYPE ERRORS ---
+        val (df_typed_clean, castErrorCount, df_cast_bad) = safeCastColumns(
+          df_valid_structure, conf.getConfig("schemaMapping"), globalDateFmt, globalTsFmt, spark, stringSchema, orderedCols)
+
         if (!df_cast_bad.isEmpty) {
           val path = s"$outputDir/../corrupted/cast_errors_${System.currentTimeMillis()}"
           logger.warn(s"Saving $castErrorCount casting errors → $path")
           df_cast_bad.write.mode("overwrite").json(path)
         }
 
-        // --- VALIDATION, DEDUP, WRITE ---
-        val validated = df_typed.filter(col(dedupKey).isNotNull)
-        val nullKeyCnt = df_typed.count() - validated.count()
+        // --- FINAL VALIDATION & WRITE ---
+        val validated = df_typed_clean.filter(col(dedupKey).isNotNull)
+        val nullKeyCnt = df_typed_clean.count() - validated.count()
         if (nullKeyCnt > 0) logger.warn(s"Filtered $nullKeyCnt rows with null $dedupKey")
 
         val withTs = validated.withColumn(partitionCol, current_timestamp())
@@ -214,6 +224,7 @@ object CsvToAvroApp {
 
         result = result.withColumn(colName, casted)
 
+        // Failed: casted to null but original string was non-empty
         val failed = result.filter(
           casted.isNull &&
           col(s"${colName}_orig").isNotNull &&

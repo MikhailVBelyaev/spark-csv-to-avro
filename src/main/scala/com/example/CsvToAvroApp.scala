@@ -80,6 +80,7 @@ object CsvToAvroApp {
           .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
           .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
           .getOrCreate()
+        spark.sparkContext.setLogLevel("WARN")
 
         val inputDir = s"/app/${cliConfig.sourceDir}"
         val outputDir = s"/app/${cliConfig.destDir}"

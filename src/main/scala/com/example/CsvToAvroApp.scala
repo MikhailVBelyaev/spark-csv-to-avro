@@ -72,7 +72,7 @@ object CsvToAvroApp {
         val spark = SparkSession.builder()
           .appName("CsvToAvroApp")
           .master(sys.env.getOrElse("SPARK_MASTER_URL", "local[*]"))
-          .config("spark.sql.session.timeZone", "UTC+5")
+          .config("spark.sql.session.timeZone", "UTC")
           .config("spark.sql.legacy.allowNonEmptyLocationInCTAS", "true")
           .config("spark.sql.legacy.timeParserPolicy", "LEGACY")
           .getOrCreate()

@@ -98,7 +98,6 @@ object CsvToAvroApp {
 
         // --- STRUCTURAL CORRUPTIONS (malformed or extra columns) ---
         val df_structural_bad = df_named.filter(
-          col("_corrupt_record").isNotNull ||
           size(split(concat_ws(delimiter, df_named.columns.map(col): _*), delimiter)) =!= orderedCols.size
         )
 

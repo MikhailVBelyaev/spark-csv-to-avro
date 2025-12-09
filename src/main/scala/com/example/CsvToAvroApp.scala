@@ -96,15 +96,13 @@ object CsvToAvroApp {
 
         val df_named = df_raw_strings.toDF(orderedCols: _*)
 
-        // --- STRUCTURAL CORRUPTIONS (malformed rows) ---
-        val hasCorrupt = df_named.columns.contains("_corrupt_record")
-        val (df_after_corrupt, df_structural_bad) = if (hasCorrupt) {
-          val bad = df_named.filter(col("_corrupt_record").isNotNull)
-          val good = df_named.filter(col("_corrupt_record").isNull).drop("_corrupt_record")
-          (good, bad)
-        } else {
-          (df_named, spark.emptyDataFrame)
-        }
+        // --- STRUCTURAL CORRUPTIONS (malformed or extra columns) ---
+        val df_structural_bad = df_named.filter(
+          col("_corrupt_record").isNotNull ||
+          size(split(concat_ws(delimiter, df_named.columns.map(col): _*), delimiter)) =!= orderedCols.size
+        )
+
+        val df_after_corrupt = df_named.except(df_structural_bad)
 
         if (!df_structural_bad.isEmpty) {
           val path = s"$outputDir/../corrupted/structural_${System.currentTimeMillis()}"

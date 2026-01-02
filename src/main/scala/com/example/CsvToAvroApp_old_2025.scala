@@ -1,4 +1,3 @@
-
 package com.example
 
 import org.apache.spark.sql.{SparkSession, DataFrame, Row}
@@ -49,10 +48,6 @@ object CsvToAvroApp {
 
   def main(args: Array[String]): Unit = {
     val conf = ConfigFactory.load().getConfig("app")
-    if (!conf.hasPath("sourceDir") || !conf.hasPath("destDir")) {
-      logger.error("Missing required configuration keys in app.conf")
-      sys.exit(1)
-    }
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt = conf.getString("timestampFormat")
     val orderedCols = conf.getStringList("columns").asScala.toSeq

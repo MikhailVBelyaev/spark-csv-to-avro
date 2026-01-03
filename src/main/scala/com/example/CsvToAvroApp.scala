@@ -21,7 +21,7 @@ object CsvToAvroApp {
   )
 
   // ==========================================================
-  // BUILD TARGET SCHEMA
+  // BUILD TARGET SCHEMA (VALID DATA ONLY)
   // ==========================================================
   def buildSchema(schemaConfig: Config, ordered: Seq[String]): StructType =
     StructType(
@@ -31,7 +31,7 @@ object CsvToAvroApp {
         val tpe = parts(0)
         val fmt = if (parts.length > 1) parts(1) else ""
 
-        val dataType = tpe match {
+        val dt = tpe match {
           case "StringType"    => StringType
           case "IntegerType"   => IntegerType
           case "LongType"      => LongType
@@ -46,7 +46,7 @@ object CsvToAvroApp {
           case _ => StringType
         }
 
-        StructField(name, dataType, nullable = true)
+        StructField(name, dt, nullable = true)
       }
     )
 
@@ -57,7 +57,6 @@ object CsvToAvroApp {
 
     val conf = ConfigFactory.load().getConfig("app")
     val orderedCols = conf.getStringList("columns").asScala.toSeq
-    val schema = buildSchema(conf.getConfig("schemaMapping"), orderedCols)
 
     val globalDateFmt = conf.getString("dateFormat")
     val globalTsFmt   = conf.getString("timestampFormat")
@@ -91,7 +90,7 @@ object CsvToAvroApp {
         val outputDir = s"/app/${cli.destDir}"
 
         // ==========================================================
-        // 1. READ RAW CSV (ALL STRING, NO HEADER)
+        // 1. READ RAW CSV (STRING ONLY)
         // ==========================================================
         val rawDf = spark.read
           .format("csv")
@@ -102,15 +101,12 @@ object CsvToAvroApp {
           .load(inputDir)
 
         val expectedCols = orderedCols.size
-        val actualCols   = rawDf.columns.length
 
         // ==========================================================
-        // 2. STRUCTURAL VALIDATION (CRITICAL FIX)
+        // 2. STRUCTURAL VALIDATION (EVE FIX)
         // ==========================================================
-        val withColCount = rawDf.withColumn(
-          "_col_count",
-          size(array(rawDf.columns.map(col): _*))
-        )
+        val withColCount =
+          rawDf.withColumn("_col_count", size(array(rawDf.columns.map(col): _*)))
 
         val df_structural_bad =
           withColCount.filter(col("_col_count") =!= expectedCols)
@@ -129,12 +125,12 @@ object CsvToAvroApp {
         }
 
         // ==========================================================
-        // 3. ASSIGN COLUMN NAMES (SAFE NOW)
+        // 3. SAFE COLUMN NAMING
         // ==========================================================
         val df_named = df_structural_ok.toDF(orderedCols: _*)
 
         // ==========================================================
-        // 4. CAST + TYPE VALIDATION
+        // 4. CAST + TYPE VALIDATION (SAFE)
         // ==========================================================
         val (df_clean, _, df_cast_bad) =
           safeCastColumns(
@@ -143,7 +139,6 @@ object CsvToAvroApp {
             globalDateFmt,
             globalTsFmt,
             spark,
-            schema,
             orderedCols
           )
 
@@ -153,12 +148,13 @@ object CsvToAvroApp {
         }
 
         // ==========================================================
-        // 5. FINAL CLEAN + WRITE
+        // 5. FINAL CLEAN WRITE
         // ==========================================================
-        val finalDf = df_clean
-          .filter(col(cli.dedupKey).isNotNull)
-          .withColumn(cli.partitionCol, current_timestamp())
-          .dropDuplicates(cli.dedupKey :: Nil)
+        val finalDf =
+          df_clean
+            .filter(col(cli.dedupKey).isNotNull)
+            .withColumn(cli.partitionCol, current_timestamp())
+            .dropDuplicates(cli.dedupKey :: Nil)
 
         finalDf.write
           .format("avro")
@@ -167,16 +163,14 @@ object CsvToAvroApp {
           .save(outputDir)
 
         logger.info(s"Clean rows written: ${finalDf.count()}")
-
         spark.stop()
 
-      case None =>
-        sys.exit(1)
+      case None => sys.exit(1)
     }
   }
 
   // ==========================================================
-  // SAFE CASTING
+  // SAFE CASTING (NO CRASH VERSION)
   // ==========================================================
   def safeCastColumns(
     df: DataFrame,
@@ -184,16 +178,18 @@ object CsvToAvroApp {
     globalDateFmt: String,
     globalTsFmt: String,
     spark: SparkSession,
-    targetSchema: StructType,
     orderedCols: Seq[String]
   ): (DataFrame, Long, DataFrame) = {
 
     import spark.implicits._
 
-    val withOrig =
+    // STRING schema for corrupted rows (CRITICAL)
+    val stringSchema =
+      StructType(orderedCols.map(c => StructField(c, StringType, true)))
+
+    var result =
       df.select(df.columns.map(col) ++ orderedCols.map(c => col(c).as(s"${c}_orig")): _*)
 
-    var result = withOrig
     val badRows = scala.collection.mutable.ArrayBuffer[Row]()
     var errorCount = 0L
 
@@ -205,6 +201,7 @@ object CsvToAvroApp {
         case "IntegerType"   => col(colName).cast(IntegerType)
         case "LongType"      => col(colName).cast(LongType)
         case "DoubleType"    => col(colName).cast(DoubleType)
+        case "FloatType"     => col(colName).cast(FloatType)
         case "BooleanType"   => col(colName).cast(BooleanType)
         case "DateType"      => to_date(col(colName), globalDateFmt)
         case "TimestampType" => to_timestamp(col(colName), globalTsFmt)
@@ -213,13 +210,15 @@ object CsvToAvroApp {
 
       result = result.withColumn(colName, casted)
 
-      val failed = result.filter(
-        col(colName).isNull &&
-        col(s"${colName}_orig").isNotNull &&
-        trim(col(s"${colName}_orig")) =!= ""
-      )
+      val failed =
+        result.filter(
+          casted.isNull &&
+          col(s"${colName}_orig").isNotNull &&
+          trim(col(s"${colName}_orig")) =!= ""
+        )
 
       errorCount += failed.count()
+
       failed
         .select(orderedCols.map(c => col(s"${c}_orig").as(c)): _*)
         .collect()
@@ -228,7 +227,7 @@ object CsvToAvroApp {
 
     val badDf =
       if (badRows.nonEmpty)
-        spark.createDataFrame(badRows.toSeq.asJava, targetSchema)
+        spark.createDataFrame(badRows.toSeq.asJava, stringSchema)
       else
         spark.emptyDataFrame
 

@@ -5,32 +5,17 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.logging.log4j.{LogManager, Logger}
-import scopt.OParser
 import scala.collection.JavaConverters._
 
 object CsvToAvroApp {
-
   private val logger: Logger = LogManager.getLogger(getClass)
 
-  case class AppConfig(
-    sourceDir: String = "data/input",
-    destDir: String = "data/output",
-    delimiter: String = ",",
-    dedupKey: String = "id",
-    partitionCol: String = "processing_timestamp"
-  )
-
-  // ==========================================================
-  // MAIN
-  // ==========================================================
   def main(args: Array[String]): Unit = {
-
     val conf = ConfigFactory.load().getConfig("app")
     val orderedCols = conf.getStringList("columns").asScala.toSeq
-    val schemaCfg   = conf.getConfig("schemaMapping")
-
+    val schemaCfg = conf.getConfig("schemaMapping")
     val dateFmt = conf.getString("dateFormat")
-    val tsFmt   = conf.getString("timestampFormat")
+    val tsFmt = conf.getString("timestampFormat")
 
     val spark = SparkSession.builder()
       .appName("CsvToAvroApp")
@@ -38,128 +23,117 @@ object CsvToAvroApp {
       .config("spark.sql.session.timeZone", "UTC")
       .getOrCreate()
 
+    import spark.implicits._  // Needed for $ notation and some functions
+
     spark.sparkContext.setLogLevel("WARN")
 
-    val inputDir  = "/app/data/input"
+    val inputDir = "/app/data/input"
     val outputDir = "/app/data/output"
+    val corruptBase = s"$outputDir/../corrupted"
 
-    // ==========================================================
-    // 1. READ RAW CSV (ALL STRING)
-    // ==========================================================
+    // 1. Read raw CSV — all columns as string, no header
     val rawDf = spark.read
-      .format("csv")
       .option("header", "false")
       .option("delimiter", ",")
       .option("mode", "PERMISSIVE")
-      .load(inputDir)
+      .csv(inputDir)
 
-    val expectedCols = orderedCols.size
+    val expectedColCount = orderedCols.size
 
-    // ==========================================================
-    // 2. STRUCTURAL VALIDATION
-    // ==========================================================
-    val withCount =
-      rawDf.withColumn("_col_count", size(array(rawDf.columns.map(col): _*)))
+    // 2. Structural validation: check column count
+    val rawWithArray = rawDf.withColumn("_cols_array", array(rawDf.columns.map(c => col(c)): _*))
 
-    val structuralBad =
-      withCount.filter(col("_col_count") =!= expectedCols)
-        .drop("_col_count")
+    val structuralOk = rawWithArray
+      .filter(size(col("_cols_array")) === expectedColCount)
+      .select(
+        (0 until expectedColCount).map(i => col("_cols_array")(i).as(orderedCols(i))): _*
+      )
 
-    val structuralOk =
-      withCount.filter(col("_col_count") === expectedCols)
-        .drop("_col_count")
-        .toDF(orderedCols: _*)
+    val structuralBad = rawWithArray
+      .filter(size(col("_cols_array")) =!= expectedColCount)
+      .drop("_cols_array")
 
     if (!structuralBad.isEmpty) {
+      val count = structuralBad.count()
+      logger.warn(s"Structural errors (wrong column count): $count rows")
       structuralBad
-        .withColumn("error_reason", lit("COLUMN_COUNT_MISMATCH"))
-        .write.mode("overwrite")
-        .json(s"$outputDir/../corrupted/structural")
+        .withColumn("error_reason", lit("WRONG_COLUMN_COUNT"))
+        .write.mode("overwrite").json(s"$corruptBase/structural")
     }
 
-    // ==========================================================
-    // 3. REQUIRED COLUMNS VALIDATION (CRITICAL FIX)
-    // ==========================================================
-    val requiredExpr =
-      orderedCols.map(c => col(c).isNotNull && trim(col(c)) =!= "").reduce(_ && _)
+    // 3. Start with structurally valid rows (all strings)
+    var dfWithCastsAndFlags = structuralOk
 
-    val missingRequired =
-      structuralOk.filter(!requiredExpr)
+    // Keep original string values for error detection
+    // We'll add _orig columns first
+    val origColsExpr = orderedCols.map(c => col(c).as(s"${c}_orig"))
 
-    val requiredOk =
-      structuralOk.filter(requiredExpr)
+    dfWithCastsAndFlags = dfWithCastsAndFlags.select(orderedCols.map(col) ++ origColsExpr: _*)
 
-    if (!missingRequired.isEmpty) {
-      missingRequired
-        .withColumn("error_reason", lit("MISSING_REQUIRED_COLUMNS"))
-        .write.mode("overwrite")
-        .json(s"$outputDir/../corrupted/missing")
-    }
+    // 4. Now cast each column and flag failures
+    for (colName <- orderedCols) {
+      val typeStr = schemaCfg.getString(colName).split(":").head
 
-    // ==========================================================
-    // 4. SAFE CAST (ROW-LEVEL)
-    // ==========================================================
-    val casted =
-      schemaCfg.entrySet().asScala.foldLeft(requiredOk) { (df, e) =>
-        val colName = e.getKey
-        val tpe = e.getValue.unwrapped().toString.split(":")(0)
-
-        val castCol = tpe match {
-          case "IntegerType"   => col(colName).cast(IntegerType)
-          case "LongType"      => col(colName).cast(LongType)
-          case "DoubleType"    => col(colName).cast(DoubleType)
-          case "FloatType"     => col(colName).cast(FloatType)
-          case "BooleanType"   => col(colName).cast(BooleanType)
-          case "DateType"      => to_date(col(colName), dateFmt)
-          case "TimestampType" => to_timestamp(col(colName), tsFmt)
-          case _               => col(colName)
-        }
-
-        df.withColumn(colName, castCol)
-          .withColumn(s"${colName}_bad",
-            when(
-              castCol.isNull &&
-              col(colName).isNotNull &&
-              trim(col(colName)) =!= "",
-              lit(true)
-            ).otherwise(lit(false))
-          )
+      val castedCol = typeStr match {
+        case "DateType"      => to_date(col(s"${colName}_orig"), dateFmt)
+        case "TimestampType" => to_timestamp(col(s"${colName}_orig"), tsFmt)
+        case _               => col(s"${colName}_orig").cast(typeStr)
       }
 
-    val anyCastFail =
-      orderedCols.map(c => col(s"${c}_bad")).reduce(_ || _)
-
-    val castBad =
-      casted.filter(anyCastFail)
-        .select(orderedCols.map(col): _*)
-
-    val clean =
-      casted.filter(!anyCastFail)
-        .select(orderedCols.map(col): _*)
-
-    if (!castBad.isEmpty) {
-      castBad
-        .withColumn("error_reason", lit("TYPE_CAST_FAILED"))
-        .write.mode("overwrite")
-        .json(s"$outputDir/../corrupted/cast")
+      dfWithCastsAndFlags = dfWithCastsAndFlags
+        .withColumn(colName, castedCol)
+        .withColumn(
+          s"${colName}_cast_bad",
+          when(
+            col(colName).isNull &&
+            trim(col(s"${colName}_orig")) =!= "" &&
+            col(s"${colName}_orig").isNotNull,
+            lit(true)
+          ).otherwise(lit(false))
+        )
     }
 
-    // ==========================================================
-    // 5. FINAL WRITE
-    // ==========================================================
-    val finalDf =
-      clean
-        .filter(col("id").isNotNull)
-        .withColumn("processing_timestamp", current_timestamp())
-        .dropDuplicates("id")
+    // 5. Detect rows with any casting failure
+    val badCastFlags = orderedCols.map(c => col(s"${c}_cast_bad"))
 
+    val anyCastFailed = if (badCastFlags.nonEmpty) {
+      badCastFlags.reduce(_ || _)
+    } else {
+      lit(false)
+    }
+
+    val castCleanDf = dfWithCastsAndFlags
+      .filter(!anyCastFailed)
+      .select(orderedCols.map(col): _*)  // Only final casted columns
+
+    val castBadDf = dfWithCastsAndFlags
+      .filter(anyCastFailed)
+      .select(orderedCols.map(c => col(s"${c}_orig").as(c)): _*)  // Original strings
+
+    if (!castBadDf.isEmpty) {
+      val count = castBadDf.count()
+      logger.warn(s"Casting errors: $count rows")
+      castBadDf
+        .withColumn("error_reason", lit("CASTING_FAILED"))
+        .write.mode("overwrite").json(s"$corruptBase/cast")
+    }
+
+    // 6. Final processing: remove null IDs, deduplicate by id, add timestamp
+    val finalDf = castCleanDf
+      .filter(col("id").isNotNull)
+      .dropDuplicates("id")  // Dedup, keep first
+      .withColumn("processing_timestamp", current_timestamp())
+
+    // 7. Write to Avro
     finalDf.write
       .format("avro")
       .mode("overwrite")
       .partitionBy("processing_timestamp")
       .save(outputDir)
 
-    logger.warn(s"VALID ROWS: ${finalDf.count()}")
+    val validCount = finalDf.count()
+    logger.warn(s"VALID ROWS: $validCount")
+
     spark.stop()
   }
 }

@@ -8,4 +8,4 @@ hs_err_pid*
 .vscode/
 data/output/
 data/scripts/
-data/doc/
+data/doc/data/corrupted/

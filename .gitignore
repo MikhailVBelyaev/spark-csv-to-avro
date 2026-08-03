@@ -9,3 +9,9 @@ hs_err_pid*
 data/output/
 data/scripts/
 data/doc/data/corrupted/
+
+# Секреты: .env с любым суффиксом (.env.en, .env.pre-*-backup и т.п.)
+# Общее правило вместо подгонки под имя файла — см. KB Tech-Debt TD-147.
+.env.*
+!.env.example
+!.env.sample
